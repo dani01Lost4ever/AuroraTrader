@@ -21,7 +21,7 @@ function fmtTime(ts: string) {
 export function LogsPanel() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [paused, setPaused] = useState(false)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const pausedRef = useRef(paused)
   pausedRef.current = paused
 
@@ -39,9 +39,11 @@ export function LogsPanel() {
     return () => clearInterval(id)
   }, [fetch])
 
-  // Auto-scroll to bottom unless paused
+  // Auto-scroll the log container to bottom unless paused
   useEffect(() => {
-    if (!paused) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (!paused && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
   }, [logs, paused])
 
   return (
@@ -68,7 +70,7 @@ export function LogsPanel() {
       </div>
 
       {/* Log list */}
-      <div style={{ height: 280, overflowY: 'auto', padding: '8px 0' }}>
+      <div ref={scrollRef} style={{ height: 280, overflowY: 'auto', padding: '8px 0' }}>
         {logs.length === 0 ? (
           <div style={{ padding: '40px 16px', textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--muted)' }}>
             Waiting for agent...
@@ -95,7 +97,6 @@ export function LogsPanel() {
             </div>
           ))
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   )

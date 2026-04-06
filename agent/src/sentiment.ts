@@ -1,4 +1,5 @@
 import axios from 'axios'
+import type { AlpacaCredentials } from './executor'
 
 export interface FearGreedData {
   value: number
@@ -10,9 +11,9 @@ let fgCache: { data: FearGreedData; ts: number } | null = null
 let newsCache: { data: Record<string, string[]>; ts: number } | null = null
 const CACHE_TTL = 10 * 60 * 1000
 
-const alpacaHeaders = () => ({
-  'APCA-API-KEY-ID': process.env.ALPACA_API_KEY!,
-  'APCA-API-SECRET-KEY': process.env.ALPACA_API_SECRET!,
+const alpacaHeaders = (creds?: AlpacaCredentials) => ({
+  'APCA-API-KEY-ID': creds?.alpaca_api_key || process.env.ALPACA_API_KEY!,
+  'APCA-API-SECRET-KEY': creds?.alpaca_api_secret || process.env.ALPACA_API_SECRET!,
 })
 
 export async function fetchFearAndGreed(): Promise<FearGreedData | null> {
@@ -32,14 +33,14 @@ export async function fetchFearAndGreed(): Promise<FearGreedData | null> {
   }
 }
 
-export async function fetchNewsHeadlines(assets: string[]): Promise<Record<string, string[]>> {
+export async function fetchNewsHeadlines(assets: string[], creds?: AlpacaCredentials): Promise<Record<string, string[]>> {
   try {
     if (newsCache && Date.now() - newsCache.ts < CACHE_TTL) return newsCache.data
     const result: Record<string, string[]> = {}
     const symbols = assets.map(a => a.replace('/', '')).join(',')
     const start = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
     const res = await axios.get('https://data.alpaca.markets/v1beta1/news', {
-      headers: alpacaHeaders(),
+      headers: alpacaHeaders(creds),
       params: { symbols, limit: 20, start, sort: 'desc' },
       timeout: 8000,
     })

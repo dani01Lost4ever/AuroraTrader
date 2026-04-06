@@ -2,10 +2,16 @@ import axios from 'axios'
 import { Decision } from './brain'
 import { getKey } from './keys'
 
-const base    = () => getKey('alpaca_base_url') || 'https://paper-api.alpaca.markets'
-const headers = () => ({
-  'APCA-API-KEY-ID':     getKey('alpaca_api_key')    || '',
-  'APCA-API-SECRET-KEY': getKey('alpaca_api_secret') || '',
+export interface AlpacaCredentials {
+  alpaca_api_key?: string
+  alpaca_api_secret?: string
+  alpaca_base_url?: string
+}
+
+const base = (creds?: AlpacaCredentials) => creds?.alpaca_base_url || getKey('alpaca_base_url') || 'https://paper-api.alpaca.markets'
+const headers = (creds?: AlpacaCredentials) => ({
+  'APCA-API-KEY-ID':     creds?.alpaca_api_key || getKey('alpaca_api_key') || '',
+  'APCA-API-SECRET-KEY': creds?.alpaca_api_secret || getKey('alpaca_api_secret') || '',
   'Content-Type': 'application/json',
 })
 
@@ -16,7 +22,7 @@ export interface OrderResult {
   filled_avg_price?: number
 }
 
-export async function executeOrder(decision: Decision): Promise<OrderResult> {
+export async function executeOrder(decision: Decision, creds?: AlpacaCredentials): Promise<OrderResult> {
   if (decision.action === 'hold') {
     return { order_id: 'HOLD', status: 'skipped' }
   }
@@ -31,7 +37,7 @@ export async function executeOrder(decision: Decision): Promise<OrderResult> {
 
   console.log(`[executor] Placing ${decision.action} order: $${decision.amount_usd} of ${decision.asset}`)
 
-  const res = await axios.post(`${base()}/v2/orders`, body, { headers: headers() })
+  const res = await axios.post(`${base(creds)}/v2/orders`, body, { headers: headers(creds) })
 
   return {
     order_id: res.data.id,
@@ -44,7 +50,7 @@ export async function executeOrder(decision: Decision): Promise<OrderResult> {
 }
 
 // Cancel a pending order (safety utility)
-export async function cancelOrder(orderId: string): Promise<void> {
-  await axios.delete(`${base()}/v2/orders/${orderId}`, { headers: headers() })
+export async function cancelOrder(orderId: string, creds?: AlpacaCredentials): Promise<void> {
+  await axios.delete(`${base(creds)}/v2/orders/${orderId}`, { headers: headers(creds) })
   console.log(`[executor] Cancelled order ${orderId}`)
 }

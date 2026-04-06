@@ -32,6 +32,8 @@ const s = {
     borderRadius: 8,
     padding: '24px 28px',
     marginBottom: 24,
+    width: '100%',
+    boxSizing: 'border-box',
   } as React.CSSProperties,
   heading: {
     fontFamily: 'var(--font-mono)',
@@ -66,6 +68,54 @@ const s = {
     letterSpacing: '0.04em',
     whiteSpace: 'pre-wrap',
   } as React.CSSProperties,
+  hero: {
+    background: 'linear-gradient(135deg, rgba(var(--accent-rgb,0,212,170),0.12), rgba(255,255,255,0.02))',
+    border: '1px solid rgba(var(--accent-rgb,0,212,170),0.22)',
+    borderRadius: 10,
+    padding: '28px 32px',
+    marginBottom: 24,
+    width: '100%',
+    boxSizing: 'border-box',
+  } as React.CSSProperties,
+  heroTitle: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: 24,
+    fontWeight: 700,
+    color: 'var(--text)',
+    letterSpacing: '0.04em',
+    marginBottom: 8,
+  } as React.CSSProperties,
+  heroGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+    gap: 14,
+    marginTop: 20,
+  } as React.CSSProperties,
+  miniCard: {
+    background: 'rgba(0,0,0,0.12)',
+    border: '1px solid var(--border2)',
+    borderRadius: 8,
+    padding: '14px 16px',
+  } as React.CSSProperties,
+  sectionGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+    gap: 10,
+    marginTop: 16,
+  } as React.CSSProperties,
+  sectionLink: {
+    display: 'block',
+    padding: '10px 12px',
+    borderRadius: 6,
+    background: 'var(--bg3)',
+    border: '1px solid var(--border)',
+    textDecoration: 'none',
+    fontFamily: 'var(--font-mono)',
+    fontSize: 11,
+    color: 'var(--muted)',
+    cursor: 'pointer',
+    boxSizing: 'border-box',
+  } as React.CSSProperties,
 }
 
 function Badge({ label, color }: { label: string; color: string }) {
@@ -86,8 +136,27 @@ function Badge({ label, color }: { label: string; color: string }) {
   )
 }
 
+function DetailBox({ title, children, tone = 'accent' }: {
+  title: string
+  children: React.ReactNode
+  tone?: 'accent' | 'green' | 'warn' | 'red'
+}) {
+  const color = tone === 'green' ? 'var(--green)' : tone === 'warn' ? 'var(--warn)' : tone === 'red' ? 'var(--danger)' : 'var(--accent)'
+  const bg = tone === 'green' ? 'rgba(34,197,94,0.06)' : tone === 'warn' ? 'rgba(245,158,11,0.07)' : tone === 'red' ? 'rgba(239,68,68,0.06)' : 'rgba(var(--accent-rgb,0,212,170),0.06)'
+  return (
+    <div style={{ background: bg, border: `1px solid ${color}`, borderRadius: 6, padding: '10px 14px', marginTop: 14 }}>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color, letterSpacing: '0.06em', marginBottom: 6 }}>
+        {title}
+      </div>
+      <div style={{ ...s.muted, margin: 0 }}>{children}</div>
+    </div>
+  )
+}
+
 export function Wiki() {
   const [active, setActive] = useState('rsi')
+  const topics = SECTIONS.filter(sec => !(sec as any).divider)
+  const activeTopic = topics.find(sec => sec.id === active)
 
   return (
     <div style={{ display: 'flex', minHeight: 'calc(100vh - 52px)', background: 'var(--bg)' }}>
@@ -131,7 +200,72 @@ export function Wiki() {
       </aside>
 
       {/* ── Content ── */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '32px 40px', maxWidth: 860 }}>
+      <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '32px 40px' }}>
+
+        <div style={s.hero}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 20, flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--accent)', letterSpacing: '0.12em', marginBottom: 10 }}>
+                TRADING KNOWLEDGE BASE
+              </div>
+              <div style={s.heroTitle}>Wiki</div>
+              <p style={{ ...s.body, margin: 0, maxWidth: 960 }}>
+                Indicator definitions, risk management rules, and strategy notes used by this project.
+                The content area now fills the available page width instead of staying capped to a narrow column.
+              </p>
+            </div>
+            <div style={{ ...s.miniCard, minWidth: 220, flex: '0 0 auto' }}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.08em', marginBottom: 6 }}>
+                SELECTED TOPIC
+              </div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 14, color: 'var(--accent)', fontWeight: 700 }}>
+                {activeTopic?.label ?? 'RSI'}
+              </div>
+              <div style={{ ...s.muted, marginTop: 6 }}>
+                Use the left menu or the quick links below to jump directly.
+              </div>
+            </div>
+          </div>
+
+          <div style={s.heroGrid}>
+            <div style={s.miniCard}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.08em', marginBottom: 6 }}>LEARN</div>
+              <div style={s.body}>What each indicator means and how the agent interprets it.</div>
+            </div>
+            <div style={s.miniCard}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.08em', marginBottom: 6 }}>APPLY</div>
+              <div style={s.body}>How the settings, stops, and sizing controls affect live trading.</div>
+            </div>
+            <div style={s.miniCard}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.08em', marginBottom: 6 }}>COMPARE</div>
+              <div style={s.body}>When to use Momentum, Mean Reversion, Breakout, Trend, Auto, or LLM.</div>
+            </div>
+          </div>
+        </div>
+
+        <div style={s.card}>
+          <div style={s.heading}>Quick Navigation</div>
+          <p style={{ ...s.muted, margin: 0 }}>
+            Direct links to every topic in the wiki.
+          </p>
+          <div style={s.sectionGrid}>
+            {topics.map(sec => (
+              <a
+                key={sec.id}
+                href={`#${sec.id}`}
+                onClick={e => { e.preventDefault(); setActive(sec.id); document.getElementById(sec.id)?.scrollIntoView({ behavior: 'smooth' }) }}
+                style={{
+                  ...s.sectionLink,
+                  color: active === sec.id ? 'var(--accent)' : 'var(--muted)',
+                  border: active === sec.id ? '1px solid var(--accent)' : '1px solid var(--border)',
+                  background: active === sec.id ? 'rgba(var(--accent-rgb,0,212,170),0.08)' : 'var(--bg3)',
+                }}
+              >
+                {sec.label}
+              </a>
+            ))}
+          </div>
+        </div>
 
         {/* RSI */}
         <div id="rsi" style={s.card}>
@@ -151,7 +285,16 @@ export function Wiki() {
             when deciding whether to buy, sell, or hold. High RSI alone does not guarantee a sell —
             it is combined with other indicators and the LLM reasoning step.
           </p>
+          <p style={s.muted}>
+            RSI measures the speed of recent movement, not whether an asset is objectively cheap or expensive.
+            In strong uptrends RSI can stay elevated for a long time, and in hard selloffs it can stay depressed.
+            That is why RSI is most useful as a timing layer around other context rather than as a standalone trigger.
+          </p>
           <code style={s.formula}>{'RSI = 100 - (100 / (1 + RS))\nRS  = Average Gain over N periods / Average Loss over N periods'}</code>
+          <DetailBox title="HOW THE AGENT USES IT">
+            RSI matters more when it agrees with other signals. RSI below 30 plus stabilising momentum is stronger than RSI below 30 alone.
+            In trend-following mode, high RSI can also be interpreted as trend strength, not automatically as a sell.
+          </DetailBox>
         </div>
 
         {/* MACD */}
@@ -173,6 +316,14 @@ export function Wiki() {
             A bearish crossover suggests selling pressure. Divergence between price and MACD can signal
             trend reversals before they happen.
           </p>
+          <p style={s.muted}>
+            MACD usually reacts more slowly than RSI. That lag is useful because it acts like a confirmation layer.
+            RSI may show the first bounce, but MACD tells you whether the move is actually developing into a broader momentum shift.
+          </p>
+          <DetailBox title="PRACTICAL READ" tone="warn">
+            The histogram slope often matters more than the raw crossover. Negative but rising histogram means bearish pressure is fading.
+            Positive but falling histogram means the up move may be losing strength before price fully rolls over.
+          </DetailBox>
         </div>
 
         {/* Bollinger Bands */}
@@ -193,6 +344,15 @@ export function Wiki() {
             BB% (percent bandwidth) normalises price within the bands: 0 = at lower band, 1 = at upper band.
             The agent uses BB% as part of the market snapshot fed to the LLM.
           </p>
+          <p style={s.muted}>
+            A common mistake is treating every upper-band touch as a sell and every lower-band touch as a buy.
+            That works better in quiet, ranging markets than in directional trends. In strong moves, price can ride the band for a long time.
+            Bands are best understood as a volatility map, not a guaranteed reversal map.
+          </p>
+          <DetailBox title="BEST USE CASE">
+            Bollinger Bands are strongest for mean reversion during sideways conditions and for spotting squeezes before expansion.
+            They are weaker as fade signals when the market is already trending hard.
+          </DetailBox>
         </div>
 
         {/* EMA */}
@@ -213,6 +373,10 @@ export function Wiki() {
             The opposite is a death cross. Price above both EMAs is generally bullish context.
             EMAs lag price, so they confirm trends rather than predict reversals.
           </p>
+          <p style={s.muted}>
+            The distance and slope of the averages matter too. A tiny cross with flat averages is often noise.
+            A wide separation with both lines rising is usually a healthier trend. This is why the strategy layer applies a crossover buffer.
+          </p>
         </div>
 
         {/* ATR */}
@@ -229,6 +393,10 @@ export function Wiki() {
             keeps dollar risk per trade roughly constant regardless of asset volatility.
             ATR can also be used to set dynamic stop-loss distances (e.g. 2× ATR from entry).
           </p>
+          <DetailBox title="WHY ATR BEATS RAW PRICE">
+            A $20 move in BTC is noise, while a $20 move in a smaller coin can be enormous. ATR converts movement into a volatility-aware unit,
+            which makes it much better for sizing and stop placement than simply looking at nominal price.
+          </DetailBox>
         </div>
 
         {/* Kelly Criterion */}
@@ -249,6 +417,10 @@ export function Wiki() {
             (leaving money on the table) and betting too much (risking ruin). When win rate is
             unreliable (few trades), Kelly can overfits to noise — use with caution early on.
           </p>
+          <DetailBox title="IMPORTANT LIMITATION" tone="red">
+            Kelly assumes your edge estimate is reasonably accurate. In live trading that estimate is always noisy, especially early on.
+            Treat Kelly as an adaptive sizing hint, not as a mathematically perfect answer.
+          </DetailBox>
         </div>
 
         {/* Sharpe Ratio */}
@@ -346,6 +518,11 @@ export function Wiki() {
             </p>
           </div>
           <code style={s.formula}>{'Trailing stop trigger = Peak price since entry × (1 - trailingStopPct / 100)'}</code>
+          <DetailBox title="HOW TO THINK ABOUT EXITS" tone="warn">
+            Stop loss controls downside, take profit defines your planned payoff, and trailing stop lets winners breathe.
+            Tight exits increase win rate but can cap upside. Loose exits reduce win rate but can improve average win size.
+            Good settings balance noise tolerance and capital protection.
+          </DetailBox>
         </div>
 
         {/* Market Regime */}
@@ -366,6 +543,14 @@ export function Wiki() {
             take long positions. In a bear regime it may reduce position sizes or shift to more
             conservative thresholds.
           </p>
+          <p style={s.muted}>
+            Regime is a top-level filter. It does not replace signal generation, but it changes how aggressive the system should be.
+            The same RSI dip can be a good buy in a bull market and a trap in a bear market.
+          </p>
+          <DetailBox title="WHY THIS IMPROVES RESULTS">
+            Many trading systems fail because they apply one logic everywhere. Regime detection first asks whether trend-following,
+            mean reversion, or patience is the more appropriate behavior right now.
+          </DetailBox>
         </div>
 
         {/* Fear & Greed */}
@@ -387,6 +572,10 @@ export function Wiki() {
             greedy when others are fearful." The agent includes the Fear & Greed value in its market
             context snapshot when making trade decisions.
           </p>
+          <p style={s.muted}>
+            This indicator works best as a sentiment overlay, not as a direct trigger. Extreme fear does not mean buy immediately;
+            it means technical reversal setups deserve more attention. Extreme greed means chasing new longs should be more selective.
+          </p>
         </div>
 
         {/* Confidence Threshold */}
@@ -404,6 +593,10 @@ export function Wiki() {
             is a trade-off between selectivity and opportunity capture. Start at 0, observe the win
             rate on low-confidence trades, then raise the threshold if those trades underperform.
           </p>
+          <DetailBox title="GOOD TUNING METHOD">
+            Review performance by confidence bucket, for example 0.50-0.60, 0.60-0.70, 0.70-0.80, and 0.80+.
+            If the lower buckets clearly underperform, raising the threshold is justified. If performance is similar, the filter may only be reducing opportunity.
+          </DetailBox>
         </div>
 
         {/* Backtesting */}
@@ -611,6 +804,10 @@ HOLD when EMAs are close together (choppy)`}</code>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--accent)', letterSpacing: '0.06em', marginBottom: 4 }}>RECOMMENDED FOR</div>
             <p style={{ ...s.muted, margin: 0 }}>Users who don't want to monitor market conditions manually. The regime detection runs every cycle using BTC's distance from its 50-day SMA and the Fear & Greed index.</p>
           </div>
+          <p style={s.muted}>
+            This is usually the best default because it solves the "one strategy everywhere" problem. Auto is not smarter because it predicts
+            more; it is smarter because it first narrows the market context and then hands control to a strategy built for that context.
+          </p>
         </div>
 
         {/* LLM */}
@@ -653,6 +850,15 @@ Output → JSON:
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--danger)', letterSpacing: '0.06em', marginBottom: 4 }}>CANNOT BE BACKTESTED CHEAPLY</div>
             <p style={{ ...s.muted, margin: 0 }}>LLM backtests use real API credits for every simulated bar. A 3-month backtest at 4h cycles on 2 assets = ~540 LLM calls. Use rule-based strategies for parameter search and LLM for live trading.</p>
           </div>
+          <p style={s.muted}>
+            The advantage of the LLM path is not magical prediction. It is flexible synthesis. The model can weigh trend, momentum,
+            volatility, sentiment, portfolio state, and recent concentration all at once. Rule-based strategies are cheaper and easier
+            to test; LLM reasoning is broader but noisier and more expensive.
+          </p>
+          <DetailBox title="NEW COST-AWARE LOGIC" tone="warn">
+            This project now tracks recent prompt spend and can refuse trades whose expected edge is too small to justify the cost.
+            The model is no longer deciding only whether a trade looks attractive, but whether it looks attractive enough after inference cost.
+          </DetailBox>
         </div>
 
         {/* Choosing */}
@@ -695,6 +901,10 @@ Output → JSON:
             Use Optimize to tune that strategy's parameters. Apply the best params and switch to the specific strategy,
             or keep Auto if regimes shift frequently.
           </p>
+          <DetailBox title="SIMPLE DECISION FRAMEWORK" tone="green">
+            If you want low maintenance, use Auto. If you trust one market condition strongly, choose the specialist strategy for it.
+            If you want maximum flexibility and accept higher cost plus extra variance, use LLM. Start simple, measure results, then add complexity only if it helps.
+          </DetailBox>
           <div style={{ background: 'rgba(var(--accent-rgb,0,212,170),0.06)', border: '1px solid var(--accent)', borderRadius: 6, padding: '10px 14px', marginTop: 12 }}>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--accent)', letterSpacing: '0.06em', marginBottom: 4 }}>PRO TIP: STRATEGY COMPARISON</div>
             <p style={{ ...s.muted, margin: 0 }}>

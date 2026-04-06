@@ -290,7 +290,7 @@ export function Overview() {
     if (ev.type === 'trade:new') {
       const trade = ev.data as Trade
       setTrades(prev => [trade, ...prev].slice(0, 100))
-      if (trade.decision.action !== 'hold') {
+      if (trade.decision.action !== 'hold' && !trade.approved && (trade.approval_mode ?? 'manual') === 'manual') {
         setPending(prev => [trade, ...prev.filter(p => p._id !== trade._id)])
         sendNotif(
           `New ${trade.decision.action.toUpperCase()} signal`,
@@ -829,8 +829,8 @@ export function Overview() {
                     <td style={{ padding: '10px 16px', fontFamily: 'var(--font-mono)', fontSize: 12, color: pnl === undefined ? 'var(--muted)' : pnl >= 0 ? 'var(--green)' : 'var(--danger)' }}>
                       {pnl !== undefined ? `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}` : '—'}
                     </td>
-                    <td style={{ padding: '10px 16px', fontFamily: 'var(--font-mono)', fontSize: 10, color: t.executed ? 'var(--green)' : t.approved ? 'var(--muted)' : t.decision.action === 'hold' ? 'var(--muted)' : 'var(--warn)' }}>
-                      {t.executed ? 'EXECUTED' : t.approved ? 'REJECTED' : t.decision.action === 'hold' ? 'HOLD' : 'PENDING'}
+                    <td style={{ padding: '10px 16px', fontFamily: 'var(--font-mono)', fontSize: 10, color: t.executed ? 'var(--green)' : t.execution_error ? 'var(--danger)' : t.approved && (t.approval_mode ?? 'manual') === 'auto' ? 'var(--accent)' : t.approved ? 'var(--muted)' : t.decision.action === 'hold' ? 'var(--muted)' : 'var(--warn)' }}>
+                      {t.executed ? 'EXECUTED' : t.execution_error ? 'FAILED' : t.approved && (t.approval_mode ?? 'manual') === 'auto' ? 'AUTO' : t.approved ? 'REJECTED' : t.decision.action === 'hold' ? 'HOLD' : 'PENDING'}
                     </td>
                   </tr>
                 )

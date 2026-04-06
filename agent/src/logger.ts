@@ -3,6 +3,7 @@ import { TradeModel, TradeRecord } from './schema'
 import { Decision } from './brain'
 import { Portfolio, fetchMarketSnapshot } from './poller'
 import { AssetSnapshot } from './schema'
+import type { AlpacaCredentials } from './executor'
 
 export async function connectDB(): Promise<void> {
   const uri = process.env.MONGO_URI || 'mongodb://localhost:27017/trading-agent'
@@ -14,9 +15,12 @@ export async function connectDB(): Promise<void> {
 export async function logDecision(
   market: Record<string, AssetSnapshot>,
   portfolio: Portfolio,
-  decision: Decision
+  decision: Decision,
+  userId: string,
+  options: { approved?: boolean; approval_mode?: 'manual' | 'auto' } = {}
 ): Promise<TradeRecord> {
   const record = new TradeModel({
+    userId,
     timestamp: new Date(),
     market,
     portfolio: {
@@ -24,7 +28,8 @@ export async function logDecision(
       positions: portfolio.positions,
     },
     decision,
-    approved: false,
+    approval_mode: options.approval_mode ?? 'manual',
+    approved: options.approved ?? false,
     executed: false,
   })
   await record.save()
@@ -41,15 +46,28 @@ export async function markExecuted(
     approved: true,
     executed: true,
     order_id: orderId,
+    $unset: { execution_error: 1 },
+  })
+}
+
+export async function markExecutionFailed(
+  recordId: string,
+  errorMessage: string
+): Promise<void> {
+  await TradeModel.findByIdAndUpdate(recordId, {
+    approved: true,
+    executed: false,
+    execution_error: errorMessage,
   })
 }
 
 // Cron job: resolve outcomes for trades older than OUTCOME_RESOLVE_HOURS
-export async function resolveOutcomes(): Promise<void> {
+export async function resolveOutcomes(userId = '__global__', creds?: AlpacaCredentials): Promise<void> {
   const resolveAfterHours = parseInt(process.env.OUTCOME_RESOLVE_HOURS || '4')
   const cutoff = new Date(Date.now() - resolveAfterHours * 60 * 60 * 1000)
 
   const pending = await TradeModel.find({
+    userId,
     executed: true,
     outcome: { $exists: false },
     timestamp: { $lt: cutoff },
@@ -60,7 +78,7 @@ export async function resolveOutcomes(): Promise<void> {
 
   // Gather unique assets needed
   const assets = [...new Set(pending.map(r => r.decision.asset))]
-  const currentPrices = await fetchMarketSnapshot(assets)
+  const currentPrices = await fetchMarketSnapshot(assets, creds)
 
   for (const record of pending) {
     const snap = currentPrices[record.decision.asset]
@@ -100,11 +118,12 @@ export async function resolveOutcomes(): Promise<void> {
 }
 
 // Export profitable trades as JSONL for fine-tuning
-export async function exportDataset(outputPath: string): Promise<number> {
+export async function exportDataset(outputPath: string, userId = '__global__'): Promise<number> {
   const { createWriteStream } = await import('fs')
   const stream = createWriteStream(outputPath)
 
   const trades = await TradeModel.find({
+    userId,
     'outcome.correct': true,
     executed: true,
   }).lean()

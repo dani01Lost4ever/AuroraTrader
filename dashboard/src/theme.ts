@@ -1,4 +1,5 @@
 export type Theme = 'dark' | 'light' | 'matrix' | 'midnight' | 'solarized' | 'nord' | 'gruvbox'
+const THEME_STORAGE_KEY = 'theme'
 
 export const THEMES: { id: Theme; label: string; accent: string; bg: string; description: string }[] = [
   { id: 'dark',      label: 'Dark',      accent: '#00d4aa', bg: '#0d0f14', description: 'Default dark theme' },
@@ -10,11 +11,25 @@ export const THEMES: { id: Theme; label: string; accent: string; bg: string; des
   { id: 'midnight',  label: 'Midnight',  accent: '#a78bfa', bg: '#07071a', description: 'Deep space violet' },
 ]
 
+const THEME_IDS = new Set<Theme>(THEMES.map(t => t.id))
+
+export function isTheme(value: string): value is Theme {
+  return THEME_IDS.has(value as Theme)
+}
+
 export function getTheme(): Theme {
-  return (localStorage.getItem('theme') as Theme) || 'dark'
+  try {
+    const stored = localStorage.getItem(THEME_STORAGE_KEY)
+    return stored && isTheme(stored) ? stored : 'dark'
+  } catch {
+    return 'dark'
+  }
 }
 
 export function applyTheme(theme: Theme): void {
+  if (!isTheme(theme)) return
   document.documentElement.setAttribute('data-theme', theme)
-  localStorage.setItem('theme', theme)
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, theme)
+  } catch {}
 }

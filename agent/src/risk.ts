@@ -3,6 +3,7 @@ import { AgentConfig, getConfig } from './config'
 import { executeOrder } from './executor'
 import { markExecuted } from './logger'
 import { Portfolio } from './poller'
+import type { AlpacaCredentials } from './executor'
 
 // High-correlation groups — avoid trading multiple from same group per cycle
 const CORRELATION_GROUPS: string[][] = [
@@ -19,8 +20,9 @@ export interface RiskStatus {
   maxOpenPositions: number
 }
 
-export async function getRiskStatus(config: AgentConfig, equity: number): Promise<RiskStatus> {
+export async function getRiskStatus(config: AgentConfig, equity: number, userId = '__global__'): Promise<RiskStatus> {
   const openPositions = await TradeModel.countDocuments({
+    userId,
     executed: true,
     outcome: { $exists: false },
     'decision.action': 'buy',
@@ -29,6 +31,7 @@ export async function getRiskStatus(config: AgentConfig, equity: number): Promis
   const todayStart = new Date()
   todayStart.setHours(0, 0, 0, 0)
   const todayTrades = await TradeModel.find({
+    userId,
     executed: true,
     'outcome.pnl_usd': { $exists: true },
     'outcome.resolved_at': { $gte: todayStart },
@@ -73,19 +76,21 @@ export function computeAtrPositionSize(
 }
 
 // Record equity snapshot after each cycle
-export async function recordEquitySnapshot(portfolio: Portfolio): Promise<void> {
-  const lastSnap = await EquityModel.findOne().sort({ ts: -1 }).lean()
+export async function recordEquitySnapshot(portfolio: Portfolio, userId = '__global__'): Promise<void> {
+  const lastSnap = await EquityModel.findOne({ userId }).sort({ ts: -1 }).lean()
   const peak = Math.max(portfolio.equity_usd, lastSnap?.peak ?? portfolio.equity_usd)
-  await EquityModel.create({ equity: portfolio.equity_usd, cash: portfolio.cash_usd, peak })
+  await EquityModel.create({ userId, equity: portfolio.equity_usd, cash: portfolio.cash_usd, peak })
 }
 
 export async function kellyPositionSize(
   asset: string,
   atrSize: number,
-  maxPositionUsd: number
+  maxPositionUsd: number,
+  userId = '__global__',
 ): Promise<number> {
   // Get historical win rate and avg win/loss for this asset from TradeModel
   const trades = await TradeModel.find({
+    userId,
     'decision.asset': asset,
     'outcome.pnl_usd': { $exists: true },
     executed: true,
@@ -109,9 +114,13 @@ export async function kellyPositionSize(
 
 // Cron job: check SL/TP for all open buy positions
 export async function monitorStopLossTakeProfit(
-  currentPrices: Record<string, AssetSnapshot>
+  currentPrices: Record<string, AssetSnapshot>,
+  userId = '__global__',
+  creds?: AlpacaCredentials,
+  configOverride?: AgentConfig,
 ): Promise<void> {
   const openTrades = await TradeModel.find({
+    userId,
     executed: true,
     outcome: { $exists: false },
     'decision.action': 'buy',
@@ -137,7 +146,7 @@ export async function monitorStopLossTakeProfit(
         amount_usd: trade.decision.amount_usd,
         confidence: 1.0,
         reasoning: `${triggered.toUpperCase()} triggered at $${currentPrice}`,
-      })
+      }, creds)
       await markExecuted(trade._id.toString(), result.order_id)
       await TradeModel.findByIdAndUpdate(trade._id, {
         close_reason: triggered,
@@ -149,16 +158,20 @@ export async function monitorStopLossTakeProfit(
     }
   }
 
-  await updateAndCheckTrailingStops(currentPrices)
+  await updateAndCheckTrailingStops(currentPrices, userId, creds, configOverride)
 }
 
 export async function updateAndCheckTrailingStops(
-  currentPrices: Record<string, AssetSnapshot>
+  currentPrices: Record<string, AssetSnapshot>,
+  userId = '__global__',
+  creds?: AlpacaCredentials,
+  configOverride?: AgentConfig,
 ): Promise<void> {
-  const cfg = getConfig()
+  const cfg = configOverride || getConfig()
   if (!cfg.trailingStopEnabled) return
 
   const openTrades = await TradeModel.find({
+    userId,
     executed: true,
     outcome: { $exists: false },
     'decision.action': 'buy',
@@ -191,7 +204,7 @@ export async function updateAndCheckTrailingStops(
           amount_usd: trade.decision.amount_usd,
           confidence: 1.0,
           reasoning: `Trailing stop triggered at $${currentPrice} (${cfg.trailingStopPct}% below high of $${newHigh})`,
-        })
+        }, creds)
         await markExecuted(trade._id.toString(), result.order_id)
         await TradeModel.findByIdAndUpdate(trade._id, { close_reason: 'sl', closed_at: new Date() })
         await PositionHighModel.deleteOne({ tradeId })

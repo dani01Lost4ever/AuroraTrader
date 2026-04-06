@@ -200,3 +200,98 @@ button:disabled {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+@keyframes landingFloatA {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.75; }
+  50% { transform: translate3d(20px, -14px, 0) scale(1.08); opacity: 0.5; }
+}
+
+@keyframes landingFloatB {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.65; }
+  50% { transform: translate3d(-24px, 16px, 0) scale(1.06); opacity: 0.45; }
+}
+
+@keyframes landingTape {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@keyframes landingScan {
+  0% { transform: translateY(-100%); opacity: 0; }
+  20% { opacity: 0.4; }
+  100% { transform: translateY(240%); opacity: 0; }
+}
+
+.landing-bg-orb {
+  position: absolute;
+  width: 340px;
+  height: 340px;
+  border-radius: 50%;
+  filter: blur(20px);
+  pointer-events: none;
+}
+
+.landing-bg-orb-a {
+  top: -120px;
+  left: -70px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 38%, transparent), transparent 72%);
+  animation: landingFloatA 14s ease-in-out infinite;
+}
+
+.landing-bg-orb-b {
+  right: -90px;
+  top: 90px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent2) 35%, transparent), transparent 74%);
+  animation: landingFloatB 17s ease-in-out infinite;
+}
+
+.landing-bg-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--border) 80%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 80%, transparent) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(circle at 50% 30%, #000 15%, transparent 76%);
+  pointer-events: none;
+}
+
+.landing-tape-track {
+  display: flex;
+  width: max-content;
+  padding: 10px 0;
+  animation: landingTape 26s linear infinite;
+}
+
+.landing-tape-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 18px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border2);
+  background: var(--bg3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text);
+}
+
+.landing-scanline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 36px;
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--accent) 16%, transparent), transparent);
+  animation: landingScan 3.2s linear infinite;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-bg-orb-a,
+  .landing-bg-orb-b,
+  .landing-tape-track,
+  .landing-scanline {
+    animation: none;
+  }
+}

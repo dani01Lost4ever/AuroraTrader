@@ -6,7 +6,7 @@ import { AssetSnapshot, TokenUsageModel } from './schema'
 import { Portfolio } from './poller'
 import type { FearGreedData } from './sentiment'
 import { computeAtrPositionSize } from './risk'
-import { getConfig } from './config'
+import { getConfig, type AgentConfig } from './config'
 import { getKey } from './keys'
 
 // â”€â”€ Pricing table (USD per 1M tokens) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -75,10 +75,10 @@ function computeCost(model: string, inputTokens: number, outputTokens: number): 
        + (outputTokens / 1_000_000) * pricing.output
 }
 
-async function saveTokenUsage(model: string, inputTokens: number, outputTokens: number, context = 'trade_decision') {
+async function saveTokenUsage(model: string, inputTokens: number, outputTokens: number, userId = '__global__', context = 'trade_decision') {
   try {
     const cost_usd = computeCost(model, inputTokens, outputTokens)
-    await TokenUsageModel.create({ llm_model: model, input_tokens: inputTokens, output_tokens: outputTokens, cost_usd, context })
+    await TokenUsageModel.create({ userId, llm_model: model, input_tokens: inputTokens, output_tokens: outputTokens, cost_usd, context })
   } catch (err) {
     console.warn('[brain] Failed to save token usage:', err)
   }
@@ -99,6 +99,8 @@ function isOpenAIModel(model: string): boolean {
 
 // â”€â”€ Known valid Claude models â€” used to warn about unknown IDs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const KNOWN_CLAUDE_MODELS = new Set(Object.keys(MODEL_PRICING).filter(k => k.startsWith('claude')))
+const DEFAULT_ESTIMATED_INPUT_TOKENS = 3400
+const DEFAULT_ESTIMATED_OUTPUT_TOKENS = 350
 
 const DecisionSchema = z.object({
   action:     z.enum(['buy', 'sell', 'hold']),
@@ -109,6 +111,23 @@ const DecisionSchema = z.object({
 })
 
 export type Decision = z.infer<typeof DecisionSchema>
+
+interface CostContext {
+  recentAvgCallCostUsd: number
+  consensusAvgCallCostUsd: number
+  estimatedTotalCostUsd: number
+  requiredProfitUsd: number
+  sampleSize: number
+}
+
+export interface DecisionRuntimeContext {
+  userId?: string
+  config?: AgentConfig
+  keys?: {
+    anthropic_api_key?: string
+    openai_api_key?: string
+  }
+}
 
 const SYSTEM_PROMPT = `You are a crypto trading agent operating a paper trading account.
 You receive a market snapshot with technical indicators for multiple assets and your current portfolio.
@@ -136,6 +155,7 @@ Rules:
 - Prefer hold when signals are mixed or ambiguous
 - Do NOT favour cheap assets â€” confidence and signal quality matter, not price
 - Diversify: avoid concentrating all activity on a single asset cycle after cycle
+- Account for LLM call cost shown in the prompt; avoid trades whose edge is too small
 - Reference the specific indicators that drove your decision in the reasoning
 - Use recent news as a sentiment signal but do not trade on news alone
 
@@ -156,6 +176,7 @@ function buildUserPrompt(
   fearGreed: FearGreedData | null,
   news: Record<string, string[]>,
   regime: string,
+  costContext: CostContext | null,
 ): string {
   const marketLines = Object.entries(market)
     .map(([asset, s]) => {
@@ -197,6 +218,13 @@ function buildUserPrompt(
   const recentNote = recentAssets.length
     ? `\nRECENTLY TRADED (last 3 cycles): ${recentAssets.join(', ')} â€” consider other assets if signals are equal.`
     : ''
+  const costNote = costContext
+    ? `\nCOST DISCIPLINE:
+  Recent avg LLM call cost (${costContext.sampleSize || 0} sample${costContext.sampleSize === 1 ? '' : 's'}): $${costContext.recentAvgCallCostUsd.toFixed(4)}
+  ${costContext.consensusAvgCallCostUsd > 0 ? `Consensus avg call cost: $${costContext.consensusAvgCallCostUsd.toFixed(4)}\n  ` : ''}Estimated total LLM cost this cycle: $${costContext.estimatedTotalCostUsd.toFixed(4)}
+  Minimum expected gross profit required before trading: $${costContext.requiredProfitUsd.toFixed(4)}
+  Return HOLD when the setup is too small to justify that cost.`
+    : ''
 
   return `MACRO CONTEXT:
   Market Regime: ${regime}
@@ -211,12 +239,87 @@ PORTFOLIO:
   Positions:
 ${posLines}
 
-MAX TRADE SIZE: $${maxPositionUsd}${recentNote}
+MAX TRADE SIZE: $${maxPositionUsd}${recentNote}${costNote}
 
 Evaluate every asset above and return one decision per asset as a JSON array.`
 }
 
-async function getSystemPrompt(): Promise<string> {
+async function getAverageRecentCost(model: string, lookback: number, userId = '__global__'): Promise<{ avgCostUsd: number; sampleSize: number }> {
+  if (lookback <= 0) {
+    return {
+      avgCostUsd: computeCost(model, DEFAULT_ESTIMATED_INPUT_TOKENS, DEFAULT_ESTIMATED_OUTPUT_TOKENS),
+      sampleSize: 0,
+    }
+  }
+
+  const rows = await TokenUsageModel.find({ userId, llm_model: model })
+    .sort({ ts: -1 })
+    .limit(lookback)
+    .lean()
+
+  if (!rows.length) {
+    return {
+      avgCostUsd: computeCost(model, DEFAULT_ESTIMATED_INPUT_TOKENS, DEFAULT_ESTIMATED_OUTPUT_TOKENS),
+      sampleSize: 0,
+    }
+  }
+
+  const totalCostUsd = rows.reduce((sum, row) => sum + (row.cost_usd ?? 0), 0)
+  return {
+    avgCostUsd: totalCostUsd / rows.length,
+    sampleSize: rows.length,
+  }
+}
+
+async function buildCostContext(primaryModel: string, consensusModel: string | null, cfg: AgentConfig, userId = '__global__'): Promise<CostContext | null> {
+  if (!cfg.costAwareTrading) return null
+
+  const lookback = Math.max(1, Math.floor(cfg.costLookbackCalls || 20))
+  const primary = await getAverageRecentCost(primaryModel, lookback, userId)
+  const consensus = consensusModel
+    ? await getAverageRecentCost(consensusModel, lookback, userId)
+    : { avgCostUsd: 0, sampleSize: 0 }
+
+  const estimatedTotalCostUsd = primary.avgCostUsd + consensus.avgCostUsd
+  return {
+    recentAvgCallCostUsd: primary.avgCostUsd,
+    consensusAvgCallCostUsd: consensus.avgCostUsd,
+    estimatedTotalCostUsd,
+    requiredProfitUsd: estimatedTotalCostUsd * Math.max(cfg.costProfitRatio || 0, 0),
+    sampleSize: primary.sampleSize,
+  }
+}
+
+function estimateExpectedGrossProfitUsd(decision: Decision, cfg: AgentConfig): number {
+  if (decision.action === 'hold' || decision.amount_usd <= 0) return 0
+
+  const takeProfitPct = Math.max(cfg.takeProfitPct, 0)
+  const stopLossPct = Math.max(cfg.stopLossPct, 0)
+  const confidence = Math.max(0, Math.min(1, decision.confidence))
+  const expectedMovePct = confidence * takeProfitPct - (1 - confidence) * stopLossPct
+
+  return Math.max(0, decision.amount_usd * (expectedMovePct / 100))
+}
+
+function applyCostGuardrails(decisions: Decision[], costContext: CostContext | null, cfg: AgentConfig): Decision[] {
+  if (!costContext) return decisions
+
+  return decisions.map(decision => {
+    if (decision.action === 'hold') return decision
+
+    const expectedGrossProfitUsd = estimateExpectedGrossProfitUsd(decision, cfg)
+    if (expectedGrossProfitUsd >= costContext.requiredProfitUsd) return decision
+
+    return {
+      ...decision,
+      action: 'hold',
+      amount_usd: 0,
+      reasoning: `Expected edge $${expectedGrossProfitUsd.toFixed(2)} below LLM cost floor $${costContext.requiredProfitUsd.toFixed(2)}`,
+    }
+  })
+}
+
+async function getSystemPrompt(_userId = '__global__'): Promise<string> {
   try {
     const { PromptModel } = await import('./schema')
     const doc = await PromptModel.findOne({ key: 'system_prompt' }).lean()
@@ -224,15 +327,15 @@ async function getSystemPrompt(): Promise<string> {
   } catch { return SYSTEM_PROMPT }
 }
 
-async function callClaude(model: string, userPrompt: string): Promise<string> {
-  const apiKey = getKey('anthropic_api_key')
+async function callClaude(model: string, userPrompt: string, ctx?: DecisionRuntimeContext): Promise<string> {
+  const apiKey = ctx?.keys?.anthropic_api_key || getKey('anthropic_api_key')
   if (!apiKey) throw new Error('[brain] Anthropic API key not set â€” add it in Settings')
 
   if (!KNOWN_CLAUDE_MODELS.has(model)) {
     console.warn(`[brain] Unknown Claude model "${model}" â€” attempting anyway`)
   }
 
-  const systemPrompt = await getSystemPrompt()
+  const systemPrompt = await getSystemPrompt(ctx?.userId)
 
   const client = new Anthropic({ apiKey })
   const msg = await client.messages.create({
@@ -244,18 +347,18 @@ async function callClaude(model: string, userPrompt: string): Promise<string> {
 
   const { input_tokens, output_tokens } = msg.usage
   console.log(`[brain] Claude tokens â€” in: ${input_tokens}  out: ${output_tokens}  cost: $${computeCost(model, input_tokens, output_tokens).toFixed(4)}`)
-  saveTokenUsage(model, input_tokens, output_tokens)
+  saveTokenUsage(model, input_tokens, output_tokens, ctx?.userId || '__global__')
 
   const block = msg.content[0]
   if (block.type !== 'text') throw new Error('Unexpected response type from Claude')
   return block.text
 }
 
-async function callOpenAI(model: string, userPrompt: string): Promise<string> {
-  const apiKey = getKey('openai_api_key')
+async function callOpenAI(model: string, userPrompt: string, ctx?: DecisionRuntimeContext): Promise<string> {
+  const apiKey = ctx?.keys?.openai_api_key || getKey('openai_api_key')
   if (!apiKey) throw new Error('[brain] OpenAI API key not set â€” add it in Settings')
 
-  const systemPrompt = await getSystemPrompt()
+  const systemPrompt = await getSystemPrompt(ctx?.userId)
 
   const client = new OpenAI({ apiKey })
   const response = await client.chat.completions.create({
@@ -270,13 +373,13 @@ async function callOpenAI(model: string, userPrompt: string): Promise<string> {
   const inputTokens  = response.usage?.prompt_tokens     ?? 0
   const outputTokens = response.usage?.completion_tokens ?? 0
   console.log(`[brain] OpenAI tokens â€” in: ${inputTokens}  out: ${outputTokens}  cost: $${computeCost(model, inputTokens, outputTokens).toFixed(4)}`)
-  saveTokenUsage(model, inputTokens, outputTokens)
+  saveTokenUsage(model, inputTokens, outputTokens, ctx?.userId || '__global__')
 
   return response.choices[0]?.message?.content ?? ''
 }
 
-async function callOllama(userPrompt: string): Promise<string> {
-  const systemPrompt = await getSystemPrompt()
+async function callOllama(userPrompt: string, ctx?: DecisionRuntimeContext): Promise<string> {
+  const systemPrompt = await getSystemPrompt(ctx?.userId)
   const res = await axios.post(`${process.env.OLLAMA_BASE_URL}/api/chat`, {
     model:   process.env.OLLAMA_MODEL || 'trading-llm',
     stream:  false,
@@ -288,9 +391,9 @@ async function callOllama(userPrompt: string): Promise<string> {
   return res.data.message.content
 }
 
-async function callLLM(model: string, userPrompt: string): Promise<string> {
+async function callLLM(model: string, userPrompt: string, ctx?: DecisionRuntimeContext): Promise<string> {
   const provider = isOpenAIModel(model) ? 'openai' : 'claude'
-  return provider === 'openai' ? callOpenAI(model, userPrompt) : callClaude(model, userPrompt)
+  return provider === 'openai' ? callOpenAI(model, userPrompt, ctx) : callClaude(model, userPrompt, ctx)
 }
 
 function parseDecisions(raw: string, assetList: string[], maxPositionUsd: number): Decision[] {
@@ -326,10 +429,11 @@ export async function getDecisions(
   fearGreed: FearGreedData | null = null,
   news: Record<string, string[]> = {},
   regime = 'Unknown',
+  runtime?: DecisionRuntimeContext,
 ): Promise<Decision[]> {
   const assetList  = Object.keys(market)
-  const userPrompt = buildUserPrompt(market, portfolio, maxPositionUsd, recentAssets, fearGreed, news, regime)
-  const model      = getConfig().claudeModel || 'claude-haiku-4-5-20251001'
+  const cfg = runtime?.config || getConfig()
+  const model      = cfg.claudeModel || 'claude-haiku-4-5-20251001'
 
   // Provider resolution: model name always wins (gpt-*/o1/o3 â†’ openai, claude-* â†’ claude).
   // LLM_PROVIDER=ollama still works as an explicit override; 'claude'/'openai' values are
@@ -340,12 +444,16 @@ export async function getDecisions(
                  : model.startsWith('claude-') ? 'claude'
                  : envProvider === 'openai'    ? 'openai'
                  : 'claude'
+  const costContext = provider === 'ollama'
+    ? null
+    : await buildCostContext(model, cfg.consensusMode && cfg.consensusModel ? cfg.consensusModel : null, cfg, runtime?.userId || '__global__')
+  const userPrompt = buildUserPrompt(market, portfolio, maxPositionUsd, recentAssets, fearGreed, news, regime, costContext)
 
   console.log(`[brain] Calling ${provider} (${model}) for ${assetList.length} assets...`)
 
-  const raw = provider === 'ollama'  ? await callOllama(userPrompt)
-            : provider === 'openai'  ? await callOpenAI(model, userPrompt)
-            :                          await callClaude(model, userPrompt)
+  const raw = provider === 'ollama'  ? await callOllama(userPrompt, runtime)
+            : provider === 'openai'  ? await callOpenAI(model, userPrompt, runtime)
+            :                          await callClaude(model, userPrompt, runtime)
 
   const cleaned = raw.replace(/```json|```/g, '').trim()
 
@@ -382,11 +490,10 @@ export async function getDecisions(
   }
 
   // Consensus mode: run a second model and merge decisions
-  const cfg = getConfig()
   if (cfg.consensusMode && cfg.consensusModel) {
     console.log(`[brain] Consensus mode â€” calling ${cfg.consensusModel}`)
     try {
-      const consensusRaw = await callLLM(cfg.consensusModel, userPrompt)
+      const consensusRaw = await callLLM(cfg.consensusModel, userPrompt, runtime)
       const consensusDecisions = parseDecisions(consensusRaw, assetList, maxPositionUsd)
 
       const consensusMap = new Map(consensusDecisions.map(d => [d.asset, d]))
@@ -404,7 +511,7 @@ export async function getDecisions(
     }
   }
 
-  return decisions
+  return applyCostGuardrails(decisions, costContext, cfg)
 }
 
 import { registerLlmStrategy } from './strategies/registry'

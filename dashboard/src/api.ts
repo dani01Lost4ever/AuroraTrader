@@ -20,7 +20,8 @@ export interface Trade {
   market: Record<string, AssetSnapshot>
   portfolio: { cash_usd: number; positions: Record<string, number> }
   decision: TradeDecision; outcome?: TradeOutcome
-  order_id?: string; approved: boolean; executed: boolean
+  order_id?: string; approval_mode?: 'manual' | 'auto'; approved: boolean; executed: boolean
+  execution_error?: string
   sl_price?: number; tp_price?: number
 }
 export interface Stats {
@@ -38,10 +39,14 @@ export interface AgentConfig {
   maxOpenPositions: number
   claudeModel: string
   cycleMinutes: number
+  marketDataMinutes: number
   confidenceThreshold: number
   kellyEnabled: boolean
   consensusMode: boolean
   consensusModel: string
+  costAwareTrading: boolean
+  costLookbackCalls: number
+  costProfitRatio: number
   trailingStopEnabled: boolean
   trailingStopPct: number
   activeStrategy: string
@@ -150,6 +155,48 @@ export interface AlpacaPosition {
   side: 'long' | 'short'
 }
 
+export interface AuthUser {
+  id: string
+  username: string
+  role: 'admin' | 'user'
+  blocked?: boolean
+  twoFactorEnabled: boolean
+}
+
+export interface EngineStatus {
+  userId: string
+  username: string
+  role: 'admin' | 'user'
+  active: boolean
+  paused: boolean
+  blocked: boolean
+  cycles: number
+  lastCycleAt: string | null
+  nextCycleAt: string | null
+  lastDataRefreshAt: string | null
+  nextDataRefreshAt: string | null
+  nextOutcomeAt: string | null
+  nextRiskCheckAt: string | null
+  cycleIntervalMinutes: number | null
+  dataIntervalMinutes: number | null
+  outcomeIntervalMinutes: number
+  riskIntervalMinutes: number
+  lastError: string | null
+}
+export interface AdminUser {
+  id: string
+  username: string
+  role: 'admin' | 'user'
+  blocked: boolean
+  blockedAt: string | null
+  blockedReason: string | null
+  twoFactorEnabled: boolean
+}
+
+export interface LoginOkResponse { token: string }
+export interface Login2faResponse { requires2fa: true; tempToken: string }
+export type LoginResponse = LoginOkResponse | Login2faResponse
+
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 export const auth = {
   getToken: () => localStorage.getItem('token'),
@@ -167,12 +214,28 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
 
   const res = await fetch(`${BASE}${path}`, { ...opts, headers })
 
-  if (res.status === 401) {
+  if (res.status === 401 && token) {
     auth.clearToken()
     window.location.reload()
     throw new Error('Session expired')
   }
-  if (!res.ok) throw new Error(`API error ${res.status}`)
+  if (!res.ok) {
+    let msg = `API error ${res.status}`
+    let parsedError = ''
+    try {
+      const body = await res.json()
+      if (body?.error && typeof body.error === 'string') {
+        msg = body.error
+        parsedError = body.error
+      }
+    } catch { /* ignore */ }
+    if (res.status === 403 && token && parsedError.toLowerCase().includes('blocked')) {
+      auth.clearToken()
+      window.location.reload()
+      throw new Error('Account is blocked')
+    }
+    throw new Error(msg)
+  }
   return res.json()
 }
 
@@ -189,7 +252,33 @@ export const api = {
 
   // Auth
   login:          (username: string, password: string) =>
-    req<{ token: string }>('/api/auth/login', json({ username, password })),
+    req<LoginResponse>('/api/auth/login', json({ username, password })),
+  register:       (username: string, password: string) =>
+    req<{ user: AuthUser }>('/api/auth/register', json({ username, password })),
+  login2fa:       (tempToken: string, code: string) =>
+    req<{ token: string }>('/api/auth/login/2fa', json({ tempToken, code })),
+  me:             () =>
+    req<{ user: AuthUser }>('/api/auth/me'),
+  start2faSetup:  () =>
+    req<{ secret: string; otpauthUrl: string }>('/api/auth/2fa/setup', { method: 'POST' }),
+  verify2faSetup: (code: string) =>
+    req<{ success: boolean }>('/api/auth/2fa/verify', json({ code })),
+  disable2fa:     (password: string, code: string) =>
+    req<{ success: boolean }>('/api/auth/2fa/disable', json({ password, code })),
+  adminEngines:    () =>
+    req<{ engines: EngineStatus[] }>('/api/admin/engines'),
+  adminUsers:      () =>
+    req<{ users: AdminUser[] }>('/api/admin/users'),
+  adminBlockUser:  (userId: string, reason?: string) =>
+    req<{ success: boolean }>(`/api/admin/users/${encodeURIComponent(userId)}/block`, json({ reason: reason || '' })),
+  adminUnblockUser:(userId: string) =>
+    req<{ success: boolean }>(`/api/admin/users/${encodeURIComponent(userId)}/unblock`, { method: 'POST' }),
+  adminPauseEngine: (userId: string) =>
+    req<{ success: boolean }>(`/api/admin/engines/${encodeURIComponent(userId)}/pause`, { method: 'POST' }),
+  adminResumeEngine: (userId: string) =>
+    req<{ success: boolean }>(`/api/admin/engines/${encodeURIComponent(userId)}/resume`, { method: 'POST' }),
+  adminTriggerEngine: (userId: string) =>
+    req<{ success: boolean }>(`/api/admin/engines/${encodeURIComponent(userId)}/trigger`, { method: 'POST' }),
   changePassword: (currentPassword: string, newPassword: string) =>
     req<{ success: boolean }>('/api/auth/change-password', json({ currentPassword, newPassword })),
 
@@ -240,7 +329,7 @@ export const api = {
   deletePrompt:    () => req<{ success: boolean }>('/api/prompt', { method: 'DELETE' }),
 
   // Agent control
-  agentStatus:    () => req<{ paused: boolean }>('/api/agent/status'),
+  agentStatus:    () => req<{ paused: boolean; blocked: boolean }>('/api/agent/status'),
   pauseAgent:     () => req<{ paused: boolean }>('/api/agent/pause', { method: 'POST' }),
   resumeAgent:    () => req<{ paused: boolean }>('/api/agent/resume', { method: 'POST' }),
 
@@ -279,6 +368,74 @@ export const api = {
     if (params?.page)    q.set('page', String(params.page))
     return req<{ trades: Trade[]; total: number }>(`/api/trades/reasoning?${q}`)
   },
+}
+
+export const platformApi = {
+  fetchModels: api.fetchModels,
+  login: api.login,
+  register: api.register,
+  login2fa: api.login2fa,
+  me: api.me,
+  start2faSetup: api.start2faSetup,
+  verify2faSetup: api.verify2faSetup,
+  disable2fa: api.disable2fa,
+  adminEngines: api.adminEngines,
+  adminUsers: api.adminUsers,
+  adminBlockUser: api.adminBlockUser,
+  adminUnblockUser: api.adminUnblockUser,
+  adminPauseEngine: api.adminPauseEngine,
+  adminResumeEngine: api.adminResumeEngine,
+  adminTriggerEngine: api.adminTriggerEngine,
+  changePassword: api.changePassword,
+  getKeys: api.getKeys,
+  setKey: api.setKey,
+  audit: api.audit,
+  getPrompt: api.getPrompt,
+  setPrompt: api.setPrompt,
+  deletePrompt: api.deletePrompt,
+  health: api.health,
+  livePrices: api.livePrices,
+}
+
+export const agentApi = {
+  stats: api.stats,
+  trades: api.trades,
+  pending: api.pending,
+  approve: api.approve,
+  reject: api.reject,
+  exportDataset: api.exportDataset,
+  logs: api.logs,
+  trainingStatus: api.trainingStatus,
+  getConfig: api.getConfig,
+  setConfig: api.setConfig,
+  setRiskConfig: api.setRiskConfig,
+  datasetDownloadUrl: api.datasetDownloadUrl,
+  availableAssets: api.availableAssets,
+  activeAssets: api.activeAssets,
+  setActiveAssets: api.setActiveAssets,
+  chartBars: api.chartBars,
+  equityHistory: api.equityHistory,
+  portfolioDetail: api.portfolioDetail,
+  perAssetPnl: api.perAssetPnl,
+  riskStatus: api.riskStatus,
+  tokenStats: api.tokenStats,
+  tokenHistory: api.tokenHistory,
+  agentStatus: api.agentStatus,
+  pauseAgent: api.pauseAgent,
+  resumeAgent: api.resumeAgent,
+  positions: api.positions,
+  agentLogs: api.agentLogs,
+  runBacktest: api.runBacktest,
+  backtestResults: api.backtestResults,
+  listStrategies: api.listStrategies,
+  strategyParams: api.strategyParams,
+  setStrategyParams: api.setStrategyParams,
+  setActiveStrategy: api.setActiveStrategy,
+  backtestCompare: api.backtestCompare,
+  runOptimize: api.runOptimize,
+  optimizeResults: api.optimizeResults,
+  benchmark: api.benchmark,
+  reasoning: api.reasoning,
 }
 
 // WebSocket URL with JWT token injected at call time

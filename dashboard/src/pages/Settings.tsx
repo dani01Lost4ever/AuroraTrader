@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
-import { THEMES, applyTheme, getTheme } from '../theme'
+import { applyTheme, getTheme } from '../theme'
 import type { Theme } from '../theme'
+import { ThemePicker } from '../components/ThemePicker'
 import { api } from '../api'
-import type { KeyName, MaskedKeys } from '../api'
+import type { KeyName, MaskedKeys, AuthUser } from '../api'
 
 // ── Prompt editor state type ─────────────────────────────────────────────────
 // (defined at module level so it can be referenced from component)
@@ -33,6 +34,9 @@ const FALLBACK_OPENAI = [
 ]
 
 const CYCLE_OPTIONS = [
+  { value: 1,   label: '1 min' },
+  { value: 5,   label: '5 min' },
+  { value: 10,  label: '10 min' },
   { value: 15,  label: '15 min' },
   { value: 30,  label: '30 min' },
   { value: 60,  label: '1 hour' },
@@ -53,8 +57,40 @@ const KEY_ORDER: KeyName[] = ['anthropic_api_key', 'openai_api_key', 'alpaca_api
 const AVG_INPUT_TOKENS  = 3400
 const AVG_OUTPUT_TOKENS = 350
 
+function normalizeModelId(modelId: string): string {
+  return modelId.trim().toLowerCase()
+}
+
+function candidateModelIds(modelId: string): string[] {
+  const id = normalizeModelId(modelId)
+  const out = new Set<string>([id])
+  // OpenAI/Anthropic snapshots often append date/version suffixes.
+  out.add(id.replace(/-\d{4}-\d{2}-\d{2}$/, ''))
+  out.add(id.replace(/-\d{8}$/, ''))
+  out.add(id.replace(/-latest$/, ''))
+  return [...out]
+}
+
+function getModelPricing(modelId: string): { input: number; output: number } | null {
+  const entries = Object.entries(MODEL_PRICING).map(([k, v]) => [normalizeModelId(k), v] as const)
+  for (const candidate of candidateModelIds(modelId)) {
+    const exact = entries.find(([k]) => k === candidate)
+    if (exact) return exact[1]
+  }
+  // Fallback: match family prefix, preferring the longest key (most specific).
+  const id = normalizeModelId(modelId)
+  const prefixMatches = entries
+    .filter(([k]) => id === k || id.startsWith(`${k}-`))
+    .sort((a, b) => b[0].length - a[0].length)
+  return prefixMatches[0]?.[1] ?? null
+}
+
+function getQrImageUrl(otpauthUrl: string): string {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data=${encodeURIComponent(otpauthUrl)}`
+}
+
 function estimateMonthlyCost(modelId: string, cycleMinutes: number): number {
-  const pricing = MODEL_PRICING[modelId] ?? { input: 3.00, output: 15.00 }
+  const pricing = getModelPricing(modelId) ?? { input: 3.00, output: 15.00 }
   const callsPerMonth = (60 / cycleMinutes) * 24 * 30
   return ((AVG_INPUT_TOKENS / 1_000_000) * pricing.input + (AVG_OUTPUT_TOKENS / 1_000_000) * pricing.output) * callsPerMonth
 }
@@ -174,12 +210,13 @@ function KeyRow({ name, masked, onSave }: { name: KeyName; masked: string; onSav
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function Settings() {
-  const [currentTheme, setCurrentTheme] = useState<Theme>(getTheme())
+  const [currentTheme, setCurrentTheme] = useState<Theme>(() => getTheme())
 
   const [cfg, setCfg] = useState({
     stopLossPct: 5, takeProfitPct: 10, maxDrawdownPct: 10, maxOpenPositions: 3,
-    claudeModel: 'claude-haiku-4-5-20251001', cycleMinutes: 30,
+    claudeModel: 'claude-haiku-4-5-20251001', cycleMinutes: 30, marketDataMinutes: 5,
     confidenceThreshold: 0, kellyEnabled: false, consensusMode: false, consensusModel: '',
+    costAwareTrading: true, costLookbackCalls: 20, costProfitRatio: 1,
     trailingStopEnabled: false, trailingStopPct: 2.5,
     activeStrategy: 'llm',
     strategyParams: {} as Record<string, Record<string, number | boolean | string>>,
@@ -206,6 +243,13 @@ export function Settings() {
   const [pwConfirm, setPwConfirm] = useState('')
   const [pwSaving, setPwSaving]   = useState(false)
   const [pwMsg, setPwMsg]         = useState<{ ok: boolean; text: string } | null>(null)
+  const [me, setMe]               = useState<AuthUser | null>(null)
+  const [twoFaSetup, setTwoFaSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null)
+  const [twoFaCode, setTwoFaCode] = useState('')
+  const [disableCode, setDisableCode] = useState('')
+  const [disablePassword, setDisablePassword] = useState('')
+  const [twoFaMsg, setTwoFaMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [twoFaLoading, setTwoFaLoading] = useState(false)
 
   // Provider + dynamic model list
   const [provider, setProvider]       = useState<'claude' | 'openai'>('claude')
@@ -231,7 +275,8 @@ export function Settings() {
     Promise.all([
       api.getConfig(),
       api.getKeys(),
-    ]).then(([c, k]) => {
+      api.me().catch(() => ({ user: null as AuthUser | null })),
+    ]).then(([c, k, meRes]) => {
       const det = isOpenAIModel(c.claudeModel ?? '') ? 'openai' : 'claude'
       setProvider(det)
       setCfg({
@@ -241,10 +286,14 @@ export function Settings() {
         maxOpenPositions:     c.maxOpenPositions      ?? 3,
         claudeModel:          c.claudeModel           ?? 'claude-haiku-4-5-20251001',
         cycleMinutes:         c.cycleMinutes          ?? 30,
+        marketDataMinutes:    c.marketDataMinutes     ?? 5,
         confidenceThreshold:  c.confidenceThreshold   ?? 0,
         kellyEnabled:         c.kellyEnabled          ?? false,
         consensusMode:        c.consensusMode         ?? false,
         consensusModel:       c.consensusModel        ?? '',
+        costAwareTrading:     c.costAwareTrading      ?? true,
+        costLookbackCalls:    c.costLookbackCalls     ?? 20,
+        costProfitRatio:      c.costProfitRatio       ?? 1,
         trailingStopEnabled:  c.trailingStopEnabled   ?? false,
         trailingStopPct:      c.trailingStopPct       ?? 2.5,
         activeStrategy:       c.activeStrategy        ?? 'llm',
@@ -252,6 +301,7 @@ export function Settings() {
         autoFallbackToLlm:    c.autoFallbackToLlm     ?? false,
       })
       setKeys(k)
+      setMe(meRes.user)
       loadModels(det)
     }).catch(e => setKeysErr(e.message))
       .finally(() => setLoading(false))
@@ -318,8 +368,66 @@ export function Settings() {
     } finally { setPwSaving(false) }
   }
 
+  const handleStart2fa = async () => {
+    setTwoFaMsg(null)
+    setTwoFaLoading(true)
+    try {
+      const setup = await api.start2faSetup()
+      setTwoFaSetup(setup)
+      setTwoFaCode('')
+      setTwoFaMsg({ ok: true, text: '2FA secret generated. Add it in your authenticator, then confirm code.' })
+    } catch (e: any) {
+      setTwoFaMsg({ ok: false, text: e.message || 'Failed to start 2FA setup' })
+    } finally {
+      setTwoFaLoading(false)
+    }
+  }
+
+  const handleVerify2fa = async () => {
+    if (!twoFaCode || twoFaCode.length !== 6) {
+      setTwoFaMsg({ ok: false, text: 'Enter a valid 6-digit code' })
+      return
+    }
+    setTwoFaMsg(null)
+    setTwoFaLoading(true)
+    try {
+      await api.verify2faSetup(twoFaCode)
+      const meRes = await api.me()
+      setMe(meRes.user)
+      setTwoFaSetup(null)
+      setTwoFaCode('')
+      setTwoFaMsg({ ok: true, text: '2FA enabled successfully' })
+    } catch (e: any) {
+      setTwoFaMsg({ ok: false, text: e.message || '2FA verification failed' })
+    } finally {
+      setTwoFaLoading(false)
+    }
+  }
+
+  const handleDisable2fa = async () => {
+    if (!disablePassword || !disableCode) {
+      setTwoFaMsg({ ok: false, text: 'Password and authenticator code are required' })
+      return
+    }
+    setTwoFaMsg(null)
+    setTwoFaLoading(true)
+    try {
+      await api.disable2fa(disablePassword, disableCode)
+      const meRes = await api.me()
+      setMe(meRes.user)
+      setDisablePassword('')
+      setDisableCode('')
+      setTwoFaSetup(null)
+      setTwoFaMsg({ ok: true, text: '2FA disabled' })
+    } catch (e: any) {
+      setTwoFaMsg({ ok: false, text: e.message || 'Failed to disable 2FA' })
+    } finally {
+      setTwoFaLoading(false)
+    }
+  }
+
   const monthlyCost   = estimateMonthlyCost(cfg.claudeModel, cfg.cycleMinutes)
-  const pricing       = MODEL_PRICING[cfg.claudeModel]
+  const pricing       = getModelPricing(cfg.claudeModel)
   const selectedModel = modelList.find(m => m.id === cfg.claudeModel)
 
   const pwInputStyle: React.CSSProperties = {
@@ -401,7 +509,14 @@ export function Settings() {
                 value={cfg.cycleMinutes}
                 onChange={patch('cycleMinutes')}
                 options={CYCLE_OPTIONS}
-                help="How often the agent wakes up to evaluate the market"
+                help="How often LLM-driven decision cycles run"
+              />
+              <Select
+                label="ALPACA DATA INTERVAL"
+                value={cfg.marketDataMinutes}
+                onChange={patch('marketDataMinutes')}
+                options={CYCLE_OPTIONS}
+                help="How often Alpaca market/account data is refreshed; pure rule strategies can use this tighter interval"
               />
             </div>
 
@@ -448,7 +563,7 @@ export function Settings() {
                 <div style={{ background: 'var(--bg3)', borderRadius: 6, border: '1px solid var(--border)', overflow: 'hidden', maxHeight: 360, overflowY: 'auto' }}>
                   {modelList.map((m, i, arr) => {
                     const est       = estimateMonthlyCost(m.id, cfg.cycleMinutes)
-                    const p         = MODEL_PRICING[m.id]
+                    const p         = getModelPricing(m.id)
                     const isSelected = m.id === cfg.claudeModel
                     return (
                       <div key={m.id} onClick={() => patch('claudeModel')(m.id)} style={{
@@ -586,6 +701,50 @@ export function Settings() {
                 help="Skip trades below this confidence (0 = disabled)"
               />
             </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 0', borderTop: '1px solid var(--border)' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text)' }}>Cost-Aware Trading</div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>Require expected trade edge to beat recent average LLM cost</div>
+              </div>
+              <button
+                onClick={() => patch('costAwareTrading')(!cfg.costAwareTrading)}
+                style={{
+                  position: 'relative', width: 44, height: 24, borderRadius: 12, padding: 0, flexShrink: 0,
+                  background: cfg.costAwareTrading ? 'var(--accent)' : 'var(--bg3)',
+                  border: `1px solid ${cfg.costAwareTrading ? 'var(--accent)' : 'var(--border2)'}`,
+                  transition: 'background 0.2s, border-color 0.2s', cursor: 'pointer',
+                }}
+              >
+                <span style={{
+                  position: 'absolute', top: 3, left: cfg.costAwareTrading ? 22 : 3,
+                  width: 16, height: 16, borderRadius: '50%',
+                  background: cfg.costAwareTrading ? '#000' : 'var(--muted)',
+                  transition: 'left 0.2s', display: 'block',
+                }} />
+              </button>
+            </div>
+
+            {cfg.costAwareTrading && (
+              <div style={{ padding: '12px 0', borderTop: '1px solid var(--border)' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px,1fr))', gap: 20 }}>
+                  <NumInput
+                    label="COST LOOKBACK"
+                    value={cfg.costLookbackCalls}
+                    onChange={patch('costLookbackCalls')}
+                    min={1} max={200} step={1} unit="calls"
+                    help="Rolling window used to average recent model spend"
+                  />
+                  <NumInput
+                    label="MIN PROFIT / COST"
+                    value={cfg.costProfitRatio}
+                    onChange={patch('costProfitRatio')}
+                    min={0.25} max={20} step={0.25} unit="x"
+                    help="Expected gross profit must exceed average LLM cost by this multiple"
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Kelly Criterion toggle */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 0', borderTop: '1px solid var(--border)' }}>
@@ -743,7 +902,9 @@ export function Settings() {
       <section style={{ marginBottom: 36 }}>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', letterSpacing: '0.08em', marginBottom: 16 }}>SECURITY</div>
         <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 8, padding: 20 }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text)', marginBottom: 16 }}>Change Admin Password</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text)', marginBottom: 16 }}>
+            Change Password {me ? `(${me.username})` : ''}
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {[
               { label: 'CURRENT PASSWORD', value: pwCurrent, set: setPwCurrent },
@@ -770,41 +931,125 @@ export function Settings() {
               )}
             </div>
           </div>
+
+          <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text)', marginBottom: 8 }}>
+              Two-Factor Authentication (Authenticator App)
+            </div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', marginBottom: 12 }}>
+              Status: {me?.twoFactorEnabled ? 'ENABLED' : 'DISABLED'}
+            </div>
+
+            {!me?.twoFactorEnabled && (
+              <>
+                {!twoFaSetup ? (
+                  <button onClick={handleStart2fa} disabled={twoFaLoading} style={{
+                    padding: '8px 18px', background: 'var(--accent)', color: '#000', border: 'none', borderRadius: 4,
+                    fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                    opacity: twoFaLoading ? 0.7 : 1,
+                  }}>
+                    {twoFaLoading ? 'PREPARING...' : 'SETUP 2FA'}
+                  </button>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'center', padding: '6px 0' }}>
+                      <img
+                        src={getQrImageUrl(twoFaSetup.otpauthUrl)}
+                        alt="Scan this QR with your authenticator app"
+                        width={220}
+                        height={220}
+                        style={{ borderRadius: 8, border: '1px solid var(--border2)', background: '#fff', padding: 6 }}
+                      />
+                    </div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', lineHeight: 1.5 }}>
+                      Scan QR with Google Authenticator, Authy, or Microsoft Authenticator.
+                    </div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', lineHeight: 1.5, opacity: 0.8 }}>
+                      If QR does not load, use the manual secret below.
+                    </div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', lineHeight: 1.5 }}>
+                      Add this secret into your authenticator app:
+                      <br />
+                      <span style={{ color: 'var(--text)' }}>{twoFaSetup.secret}</span>
+                    </div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', lineHeight: 1.5 }}>
+                      OTPAuth URL:
+                      <br />
+                      <span style={{ color: 'var(--text)', wordBreak: 'break-all' }}>{twoFaSetup.otpauthUrl}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="\d{6}"
+                        maxLength={6}
+                        value={twoFaCode}
+                        onChange={e => setTwoFaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        placeholder="6-digit code"
+                        style={{ ...pwInputStyle, maxWidth: 160 }}
+                      />
+                      <button onClick={handleVerify2fa} disabled={twoFaLoading || twoFaCode.length !== 6} style={{
+                        padding: '8px 14px', background: 'var(--accent)', color: '#000', border: 'none', borderRadius: 4,
+                        fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                        opacity: twoFaLoading ? 0.7 : 1,
+                      }}>
+                        {twoFaLoading ? 'VERIFYING...' : 'VERIFY & ENABLE'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {me?.twoFactorEnabled && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ minWidth: 160, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.06em' }}>PASSWORD</span>
+                  <input type="password" value={disablePassword} onChange={e => setDisablePassword(e.target.value)} style={pwInputStyle} />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ minWidth: 160, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.06em' }}>AUTH CODE</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\d{6}"
+                    maxLength={6}
+                    value={disableCode}
+                    onChange={e => setDisableCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    style={pwInputStyle}
+                  />
+                </div>
+                <div>
+                  <button onClick={handleDisable2fa} disabled={twoFaLoading || !disablePassword || disableCode.length !== 6} style={{
+                    padding: '8px 18px', background: 'transparent', color: 'var(--danger)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 4,
+                    fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                    opacity: twoFaLoading ? 0.7 : 1,
+                  }}>
+                    {twoFaLoading ? 'DISABLING...' : 'DISABLE 2FA'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {twoFaMsg && (
+              <div style={{ marginTop: 10, fontFamily: 'var(--font-mono)', fontSize: 11, color: twoFaMsg.ok ? 'var(--green)' : 'var(--danger)' }}>
+                {twoFaMsg.ok ? '[OK]' : '[ERR]'} {twoFaMsg.text}
+              </div>
+            )}
+          </div>
         </div>
       </section>
 
       {/* ── Theme ── */}
       <section style={{ marginBottom: 36 }}>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', letterSpacing: '0.08em', marginBottom: 14 }}>THEME</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
-          {THEMES.map(t => {
-            const isSelected = currentTheme === t.id
-            return (
-              <button key={t.id} onClick={() => { applyTheme(t.id); setCurrentTheme(t.id) }} style={{
-                padding: 0, border: 'none', background: 'none', borderRadius: 10, overflow: 'hidden',
-                outline: isSelected ? `2px solid ${t.accent}` : '2px solid transparent',
-                outlineOffset: 2, cursor: 'pointer', transition: 'outline 0.15s', textAlign: 'left',
-              }}>
-                <div style={{ background: t.bg, padding: '16px 14px', borderTopLeftRadius: 8, borderTopRightRadius: 8 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 10 }}>
-                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: t.accent }} />
-                    <div style={{ flex: 1, height: 4, borderRadius: 2, background: `${t.accent}44` }} />
-                  </div>
-                  <div style={{ height: 4, borderRadius: 2, background: `${t.accent}66`, marginBottom: 6 }} />
-                  <div style={{ height: 3, borderRadius: 2, background: `${t.accent}33`, marginBottom: 5, width: '70%' }} />
-                  <div style={{ height: 3, borderRadius: 2, background: `${t.accent}22`, width: '85%' }} />
-                  <div style={{ marginTop: 10, borderRadius: 4, background: `${t.accent}11`, border: `1px solid ${t.accent}22`, padding: '5px 8px' }}>
-                    <div style={{ height: 3, borderRadius: 2, background: `${t.accent}55`, width: '60%' }} />
-                  </div>
-                </div>
-                <div style={{ padding: '8px 14px', background: 'var(--bg2)', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: isSelected ? 'var(--accent)' : 'var(--text)', fontWeight: isSelected ? 700 : 400 }}>{t.label}</span>
-                  {isSelected && <span style={{ fontSize: 10, color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>✓</span>}
-                </div>
-              </button>
-            )
-          })}
-        </div>
+        <ThemePicker
+          value={currentTheme}
+          onChange={(theme) => {
+            applyTheme(theme)
+            setCurrentTheme(theme)
+          }}
+        />
       </section>
 
       <div style={{ margin: '32px 0', borderTop: '1px solid var(--border)' }} />

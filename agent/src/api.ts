@@ -1,27 +1,61 @@
 import express from 'express'
 import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
-import { TradeModel, EquityModel, TokenUsageModel, AuditLogModel, PromptModel, BacktestResultModel, OptimizeResultModel } from './schema'
+import { TradeModel, EquityModel, TokenUsageModel, AuditLogModel, PromptModel, BacktestResultModel, OptimizeResultModel, UserModel } from './schema'
 import { executeOrder } from './executor'
-import { markExecuted, exportDataset } from './logger'
+import { markExecuted, markExecutionFailed, exportDataset } from './logger'
 import { getLogs } from './logs'
-import { getConfig, setConfig } from './config'
-import { requireAuth, loginHandler, changePasswordHandler } from './auth'
-import { getKey, setKey, getMaskedKeys, KEY_NAMES } from './keys'
+import { getConfig, getUserConfig, setUserConfig } from './config'
+import {
+  requireAuth,
+  loginHandler,
+  login2faVerifyHandler,
+  registerHandler,
+  meHandler,
+  start2faSetupHandler,
+  verify2faSetupHandler,
+  disable2faHandler,
+  changePasswordHandler,
+  isAdminUser,
+} from './auth'
+import { getKey, getMaskedKeysForUser, getUserKey, getUserKeySet, setUserKey, KEY_NAMES } from './keys'
 import { logAudit } from './audit'
-import { isPaused, pauseAgent, resumeAgent } from './agentState'
+import { engineManager } from './engineManager'
 import type { KeyName } from './keys'
 import axios from 'axios'
 import path from 'path'
 import fs from 'fs'
 
 const ALPACA_DATA = 'https://data.alpaca.markets'
+const MANUAL_PENDING_FILTER = {
+  approved: false,
+  approval_mode: { $ne: 'auto' },
+  'decision.action': { $ne: 'hold' },
+}
 
-const alpacaBase    = () => getKey('alpaca_base_url') || 'https://paper-api.alpaca.markets'
-const alpacaHeaders = () => ({
-  'APCA-API-KEY-ID':     getKey('alpaca_api_key')    || '',
-  'APCA-API-SECRET-KEY': getKey('alpaca_api_secret') || '',
-})
+const currentUser = (req: express.Request) => (req as any).user?.username || 'unknown'
+const currentUserId = (req: express.Request) => (req as any).user?.id || ''
+const isAdmin = (req: express.Request) => isAdminUser(req)
+
+async function userAlpacaBase(req: express.Request): Promise<string> {
+  const userId = currentUserId(req)
+  if (!userId) return getKey('alpaca_base_url') || 'https://paper-api.alpaca.markets'
+  return (await getUserKey(userId, 'alpaca_base_url')) || 'https://paper-api.alpaca.markets'
+}
+
+async function userAlpacaHeaders(req: express.Request): Promise<Record<string, string>> {
+  const userId = currentUserId(req)
+  if (!userId) {
+    return {
+      'APCA-API-KEY-ID': getKey('alpaca_api_key') || '',
+      'APCA-API-SECRET-KEY': getKey('alpaca_api_secret') || '',
+    }
+  }
+  return {
+    'APCA-API-KEY-ID': (await getUserKey(userId, 'alpaca_api_key')) || '',
+    'APCA-API-SECRET-KEY': (await getUserKey(userId, 'alpaca_api_secret')) || '',
+  }
+}
 
 export function createApiServer(): express.Application {
   const app = express()
@@ -37,17 +71,44 @@ export function createApiServer(): express.Application {
   })
 
   // ── Public routes (no auth needed) ────────────────────────────────────────
+  app.post('/api/auth/register', async (req, res) => {
+    const originalJson = res.json.bind(res)
+    res.json = (body: any) => {
+      if (res.statusCode < 400 && body?.user?.username) {
+        logAudit('register', body.user.username + ' registered', body.user.username, req).catch(() => {})
+        if (body.user.id) {
+          engineManager.ensureUser(body.user.id).catch(() => {})
+        }
+      }
+      return originalJson(body)
+    }
+    return registerHandler(req, res)
+  })
+
   app.post('/api/auth/login', async (req, res) => {
-    // Wrap loginHandler to add audit logging on success
     const originalJson = res.json.bind(res)
     res.json = (body: any) => {
       if (body?.token) {
         const username: string = req.body?.username || 'unknown'
         logAudit('login', username + ' logged in', username, req).catch(() => {})
+      } else if (body?.requires2fa) {
+        const username: string = req.body?.username || 'unknown'
+        logAudit('login_2fa_challenge', username + ' passed password step', username, req).catch(() => {})
       }
       return originalJson(body)
     }
     return loginHandler(req, res)
+  })
+
+  app.post('/api/auth/login/2fa', async (req, res) => {
+    const originalJson = res.json.bind(res)
+    res.json = (body: any) => {
+      if (body?.token) {
+        logAudit('login_2fa', '2FA login success', 'unknown', req).catch(() => {})
+      }
+      return originalJson(body)
+    }
+    return login2faVerifyHandler(req, res)
   })
 
   // GET /api/health — public health check
@@ -81,7 +142,10 @@ export function createApiServer(): express.Application {
       for (const asset of assets) {
         try {
           const response = await axios.get(`${ALPACA_DATA}/v1beta3/crypto/us/latest/bars`, {
-            headers: alpacaHeaders(),
+            headers: {
+              'APCA-API-KEY-ID': getKey('alpaca_api_key') || '',
+              'APCA-API-SECRET-KEY': getKey('alpaca_api_secret') || '',
+            },
             params: { symbols: asset },
           })
           const bar = response.data.bars?.[asset]
@@ -98,12 +162,121 @@ export function createApiServer(): express.Application {
   // ── All routes below require a valid JWT ──────────────────────────────────
   app.use('/api', requireAuth)
 
+  app.get('/api/auth/me', meHandler)
+  app.post('/api/auth/2fa/setup', async (req, res) => {
+    const originalJson = res.json.bind(res)
+    res.json = (body: any) => {
+      if (res.statusCode < 400 && body?.secret) {
+        logAudit('2fa_setup_started', '2FA setup started', currentUser(req), req).catch(() => {})
+      }
+      return originalJson(body)
+    }
+    return start2faSetupHandler(req, res)
+  })
+  app.post('/api/auth/2fa/verify', async (req, res) => {
+    const originalJson = res.json.bind(res)
+    res.json = (body: any) => {
+      if (body?.success) {
+        logAudit('2fa_enabled', '2FA enabled', currentUser(req), req).catch(() => {})
+      }
+      return originalJson(body)
+    }
+    return verify2faSetupHandler(req, res)
+  })
+  app.post('/api/auth/2fa/disable', async (req, res) => {
+    const originalJson = res.json.bind(res)
+    res.json = (body: any) => {
+      if (body?.success) {
+        logAudit('2fa_disabled', '2FA disabled', currentUser(req), req).catch(() => {})
+      }
+      return originalJson(body)
+    }
+    return disable2faHandler(req, res)
+  })
+
+  app.get('/api/admin/engines', async (req, res) => {
+    if (!isAdmin(req)) return res.status(403).json({ error: 'Admin only' })
+    res.json({ engines: engineManager.list() })
+  })
+  app.get('/api/admin/users', async (req, res) => {
+    if (!isAdmin(req)) return res.status(403).json({ error: 'Admin only' })
+    const users = await UserModel.find({}, '_id username role blocked blockedAt blockedReason twoFactorEnabled').sort({ username: 1 }).lean()
+    res.json({
+      users: users.map((u) => ({
+        id: u._id.toString(),
+        username: u.username,
+        role: u.role,
+        blocked: Boolean((u as any).blocked),
+        blockedAt: (u as any).blockedAt ?? null,
+        blockedReason: (u as any).blockedReason ?? null,
+        twoFactorEnabled: Boolean((u as any).twoFactorEnabled),
+      })),
+    })
+  })
+  app.post('/api/admin/users/:userId/block', async (req, res) => {
+    if (!isAdmin(req)) return res.status(403).json({ error: 'Admin only' })
+    const userId = req.params.userId
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 200) : ''
+    const user = await UserModel.findById(userId)
+    if (!user) return res.status(404).json({ error: 'User not found' })
+    if (user.role === 'admin') return res.status(400).json({ error: 'Admin account cannot be blocked' })
+
+    user.blocked = true
+    user.blockedAt = new Date()
+    user.blockedReason = reason || undefined
+    await user.save()
+    await engineManager.ensureUser(userId)
+    engineManager.setBlocked(userId, true)
+    engineManager.pause(userId)
+    await logAudit('admin.user.block', `${user.username} blocked${reason ? `: ${reason}` : ''}`, currentUser(req), req)
+    res.json({ success: true })
+  })
+  app.post('/api/admin/users/:userId/unblock', async (req, res) => {
+    if (!isAdmin(req)) return res.status(403).json({ error: 'Admin only' })
+    const userId = req.params.userId
+    const user = await UserModel.findById(userId)
+    if (!user) return res.status(404).json({ error: 'User not found' })
+
+    user.blocked = false
+    user.blockedAt = undefined
+    user.blockedReason = undefined
+    await user.save()
+    await engineManager.ensureUser(userId)
+    engineManager.setBlocked(userId, false)
+    await logAudit('admin.user.unblock', `${user.username} unblocked`, currentUser(req), req)
+    res.json({ success: true })
+  })
+  app.post('/api/admin/engines/:userId/pause', async (req, res) => {
+    if (!isAdmin(req)) return res.status(403).json({ error: 'Admin only' })
+    await engineManager.ensureUser(req.params.userId)
+    const ok = engineManager.pause(req.params.userId)
+    if (!ok) return res.status(404).json({ error: 'Engine not found' })
+    await logAudit('admin.engine.pause', req.params.userId, currentUser(req), req)
+    res.json({ success: true })
+  })
+  app.post('/api/admin/engines/:userId/resume', async (req, res) => {
+    if (!isAdmin(req)) return res.status(403).json({ error: 'Admin only' })
+    await engineManager.ensureUser(req.params.userId)
+    const ok = engineManager.resume(req.params.userId)
+    if (!ok) return res.status(400).json({ error: 'Engine not found or blocked user' })
+    await logAudit('admin.engine.resume', req.params.userId, currentUser(req), req)
+    res.json({ success: true })
+  })
+  app.post('/api/admin/engines/:userId/trigger', async (req, res) => {
+    if (!isAdmin(req)) return res.status(403).json({ error: 'Admin only' })
+    await engineManager.ensureUser(req.params.userId)
+    const ok = await engineManager.triggerCycle(req.params.userId)
+    if (!ok) return res.status(404).json({ error: 'Engine not found' })
+    await logAudit('admin.engine.trigger', req.params.userId, currentUser(req), req)
+    res.json({ success: true })
+  })
+
   // POST /api/auth/change-password
   app.post('/api/auth/change-password', async (req, res) => {
     const originalJson = res.json.bind(res)
     res.json = (body: any) => {
       if (body?.success) {
-        logAudit('password_changed', 'admin password changed', 'admin', req).catch(() => {})
+        logAudit('password_changed', currentUser(req) + ' changed password', currentUser(req), req).catch(() => {})
       }
       return originalJson(body)
     }
@@ -111,28 +284,30 @@ export function createApiServer(): express.Application {
   })
 
   // GET /api/agent/status
-  app.get('/api/agent/status', requireAuth, (_req, res) => {
-    res.json({ paused: isPaused() })
+  app.get('/api/agent/status', requireAuth, (req, res) => {
+    const status = engineManager.get(currentUserId(req))
+    res.json({ paused: status?.paused ?? false, blocked: status?.blocked ?? false })
   })
 
   // POST /api/agent/pause
   app.post('/api/agent/pause', requireAuth, (req, res) => {
-    pauseAgent()
-    logAudit('agent.pause', 'Agent paused', (req as any).user, req).catch(() => {})
+    engineManager.pause(currentUserId(req))
+    logAudit('agent.pause', 'Agent paused', currentUser(req), req).catch(() => {})
     res.json({ paused: true })
   })
 
   // POST /api/agent/resume
   app.post('/api/agent/resume', requireAuth, (req, res) => {
-    resumeAgent()
-    logAudit('agent.resume', 'Agent resumed', (req as any).user, req).catch(() => {})
+    engineManager.resume(currentUserId(req))
+    logAudit('agent.resume', 'Agent resumed', currentUser(req), req).catch(() => {})
     res.json({ paused: false })
   })
 
   // GET /api/positions — live positions from Alpaca
-  app.get('/api/positions', requireAuth, async (_req, res) => {
+  app.get('/api/positions', requireAuth, async (req, res) => {
     try {
-      const r = await axios.get(`${alpacaBase()}/v2/positions`, { headers: alpacaHeaders() })
+      const [base, headers] = await Promise.all([userAlpacaBase(req), userAlpacaHeaders(req)])
+      const r = await axios.get(`${base}/v2/positions`, { headers })
       res.json(r.data)
     } catch {
       res.json([])
@@ -141,13 +316,15 @@ export function createApiServer(): express.Application {
 
   // GET /api/agent/logs?limit=150
   app.get('/api/agent/logs', requireAuth, (req, res) => {
+    if (!isAdmin(req)) return res.json({ logs: [] })
     const limit = Math.min(Number(req.query.limit ?? 150), 500)
     res.json({ logs: getLogs(limit) })
   })
 
   // GET /api/keys - masked values for all stored keys
-  app.get('/api/keys', (_req, res) => {
-    res.json(getMaskedKeys())
+  app.get('/api/keys', async (req, res) => {
+    const userId = currentUserId(req)
+    res.json(await getMaskedKeysForUser(userId))
   })
 
   // POST /api/keys - set a single key
@@ -159,8 +336,8 @@ export function createApiServer(): express.Application {
     if (!KEY_NAMES.includes(key as KeyName)) {
       return res.status(400).json({ error: `Unknown key "${key}"` })
     }
-    await setKey(key as KeyName, value.trim())
-    await logAudit('key_set', key + ' updated', 'admin', req)
+    await setUserKey(currentUserId(req), key as KeyName, value.trim())
+    await logAudit('key_set', key + ' updated', currentUser(req), req)
     console.log(`[api] Key "${key}" updated`)
     res.json({ success: true })
   })
@@ -168,10 +345,11 @@ export function createApiServer(): express.Application {
   // GET /api/models?provider=claude|openai - fetch available models from the provider API
   app.get('/api/models', async (req, res) => {
     const provider = (req.query.provider as string) || 'claude'
+    const userId = currentUserId(req)
 
     try {
       if (provider === 'claude') {
-        const apiKey = getKey('anthropic_api_key')
+        const apiKey = await getUserKey(userId, 'anthropic_api_key')
         if (!apiKey) return res.status(400).json({ error: 'Anthropic API key not set' })
         const client = new Anthropic({ apiKey })
         const page = await client.models.list({ limit: 100 })
@@ -183,7 +361,7 @@ export function createApiServer(): express.Application {
       }
 
       if (provider === 'openai') {
-        const apiKey = getKey('openai_api_key')
+        const apiKey = await getUserKey(userId, 'openai_api_key')
         if (!apiKey) return res.status(400).json({ error: 'OpenAI API key not set' })
         const client = new OpenAI({ apiKey })
         const page = await client.models.list()
@@ -206,21 +384,20 @@ export function createApiServer(): express.Application {
   app.get('/api/trades', async (req, res) => {
     const limit = parseInt(req.query.limit as string) || 50
     const page = parseInt(req.query.page as string) || 1
-    const trades = await TradeModel.find()
+    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    const trades = await TradeModel.find(scope)
       .sort({ timestamp: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
       .lean()
-    const total = await TradeModel.countDocuments()
+    const total = await TradeModel.countDocuments(scope)
     res.json({ trades, total, page, limit })
   })
 
   // GET /api/trades/pending - unapproved non-hold decisions
   app.get('/api/trades/pending', async (req, res) => {
-    const pending = await TradeModel.find({
-      approved: false,
-      'decision.action': { $ne: 'hold' },
-    })
+    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    const pending = await TradeModel.find({ ...MANUAL_PENDING_FILTER, ...scope })
       .sort({ timestamp: -1 })
       .lean()
     res.json(pending)
@@ -228,15 +405,16 @@ export function createApiServer(): express.Application {
 
   // GET /api/stats - summary for dashboard
   app.get('/api/stats', async (req, res) => {
+    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
     const [total, executed, profitable, datasetSize] = await Promise.all([
-      TradeModel.countDocuments(),
-      TradeModel.countDocuments({ executed: true }),
-      TradeModel.countDocuments({ 'outcome.correct': true }),
-      TradeModel.countDocuments({ 'outcome.correct': true, executed: true }),
+      TradeModel.countDocuments(scope),
+      TradeModel.countDocuments({ ...scope, executed: true }),
+      TradeModel.countDocuments({ ...scope, 'outcome.correct': true }),
+      TradeModel.countDocuments({ ...scope, 'outcome.correct': true, executed: true }),
     ])
 
     const pnlAgg = await TradeModel.aggregate([
-      { $match: { 'outcome.pnl_usd': { $exists: true } } },
+      { $match: { ...scope, 'outcome.pnl_usd': { $exists: true } } },
       { $group: { _id: null, total_pnl: { $sum: '$outcome.pnl_usd' } } },
     ])
 
@@ -255,12 +433,18 @@ export function createApiServer(): express.Application {
     const id = req.params.id
     const record = await TradeModel.findById(id)
     if (!record) return res.status(404).json({ error: 'Not found' })
+    if (!isAdmin(req) && record.userId !== currentUserId(req)) return res.status(403).json({ error: 'Forbidden' })
     if (record.approved) return res.status(400).json({ error: 'Already approved' })
 
     try {
-      const result = await executeOrder(record.decision)
+      const keys = await getUserKeySet(record.userId)
+      const result = await executeOrder(record.decision, {
+        alpaca_api_key: keys.alpaca_api_key,
+        alpaca_api_secret: keys.alpaca_api_secret,
+        alpaca_base_url: keys.alpaca_base_url,
+      })
       await markExecuted(record._id.toString(), result.order_id)
-      await logAudit('trade_approved', id, 'admin', req)
+      await logAudit('trade_approved', id, currentUser(req), req)
       res.json({ success: true, order: result })
     } catch (err: any) {
       res.status(500).json({ error: err.message })
@@ -270,14 +454,17 @@ export function createApiServer(): express.Application {
   // POST /api/trades/:id/reject - dismiss without executing
   app.post('/api/trades/:id/reject', async (req, res) => {
     const id = req.params.id
+    const record = await TradeModel.findById(id).lean()
+    if (!record) return res.status(404).json({ error: 'Not found' })
+    if (!isAdmin(req) && record.userId !== currentUserId(req)) return res.status(403).json({ error: 'Forbidden' })
     await TradeModel.findByIdAndUpdate(id, { approved: true, executed: false })
-    await logAudit('trade_rejected', id, 'admin', req)
+    await logAudit('trade_rejected', id, currentUser(req), req)
     res.json({ success: true })
   })
 
   // GET /api/config - current runtime config
-  app.get('/api/config', (req, res) => {
-    res.json(getConfig())
+  app.get('/api/config', async (req, res) => {
+    res.json(await getUserConfig(currentUserId(req)))
   })
 
   // POST /api/config - update runtime config
@@ -286,16 +473,13 @@ export function createApiServer(): express.Application {
     if (typeof autoApprove !== 'boolean') {
       return res.status(400).json({ error: 'autoApprove must be a boolean' })
     }
-    await logAudit('config_change', JSON.stringify(req.body), 'admin', req)
-    const updated = await setConfig({ autoApprove })
-    console.log(`[api] autoApprove set to ${autoApprove}`)
+    await logAudit('config_change', JSON.stringify(req.body), currentUser(req), req)
+    const updated = await setUserConfig(currentUserId(req), { autoApprove })
+    console.log(`[api] user ${currentUser(req)} autoApprove set to ${autoApprove}`)
 
     // When switching TO auto-approve, drain any pending trades immediately
-    if (autoApprove) {
-      const pending = await TradeModel.find({
-        approved: false,
-        'decision.action': { $ne: 'hold' },
-      }).lean()
+    if (false && autoApprove) {
+      const pending = await TradeModel.find(MANUAL_PENDING_FILTER).lean()
 
       if (pending.length) {
         console.log(`[api] Auto-trade enabled — executing ${pending.length} pending trade(s)...`)
@@ -305,6 +489,7 @@ export function createApiServer(): express.Application {
             await markExecuted(trade._id.toString(), result.order_id)
             console.log(`[api] Auto-executed pending ${trade.decision.action.toUpperCase()} ${trade.decision.asset}`)
           } catch (err: any) {
+            await markExecutionFailed(trade._id.toString(), err.message)
             console.error(`[api] Failed to execute pending ${trade.decision.asset}: ${err.message}`)
           }
         }
@@ -320,7 +505,8 @@ export function createApiServer(): express.Application {
     const ollamaBase = process.env.OLLAMA_BASE_URL || 'http://localhost:11434'
     const ollamaModel = process.env.OLLAMA_MODEL || 'trading-llm'
 
-    const datasetSize = await TradeModel.countDocuments({ 'outcome.correct': true, executed: true })
+    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    const datasetSize = await TradeModel.countDocuments({ ...scope, 'outcome.correct': true, executed: true })
 
     // Find latest export file
     const exportsDir = path.join(process.cwd(), 'exports')
@@ -344,7 +530,23 @@ export function createApiServer(): express.Application {
       ollamaReachable = true
     } catch { /* not running */ }
 
-    res.json({ provider, ollamaModel, ollamaBase, ollamaReachable, datasetSize, lastExport, lastExportFile })
+    const userId = currentUserId(req)
+    const userClaudeKey = await getUserKey(userId, 'anthropic_api_key')
+    const userOpenaiKey = await getUserKey(userId, 'openai_api_key')
+    const effectiveProvider =
+      provider === 'openai'
+        ? (userOpenaiKey ? 'openai' : 'claude')
+        : (userClaudeKey ? 'claude' : provider)
+
+    res.json({
+      provider: effectiveProvider,
+      ollamaModel,
+      ollamaBase,
+      ollamaReachable,
+      datasetSize,
+      lastExport,
+      lastExportFile,
+    })
   })
 
   // GET /api/dataset/download - download the latest exported JSONL
@@ -365,6 +567,7 @@ export function createApiServer(): express.Application {
 
   // GET /api/logs - recent agent log entries from ring buffer
   app.get('/api/logs', (req, res) => {
+    if (!isAdmin(req)) return res.json([])
     const limit = parseInt(req.query.limit as string) || 150
     res.json(getLogs(limit))
   })
@@ -372,8 +575,9 @@ export function createApiServer(): express.Application {
   // GET /api/assets/available - all tradeable crypto assets from Alpaca
   app.get('/api/assets/available', async (req, res) => {
     try {
-      const response = await axios.get(`${alpacaBase()}/v2/assets`, {
-        headers: alpacaHeaders(),
+      const [base, headers] = await Promise.all([userAlpacaBase(req), userAlpacaHeaders(req)])
+      const response = await axios.get(`${base}/v2/assets`, {
+        headers,
         params: { asset_class: 'crypto', status: 'active' },
       })
       const assets = (response.data as any[])
@@ -391,8 +595,9 @@ export function createApiServer(): express.Application {
   })
 
   // GET /api/assets/active - currently active trading assets
-  app.get('/api/assets/active', (req, res) => {
-    res.json(getConfig().assets)
+  app.get('/api/assets/active', async (req, res) => {
+    const cfg = await getUserConfig(currentUserId(req))
+    res.json(cfg.assets)
   })
 
   // POST /api/assets/active - update active trading assets
@@ -401,7 +606,7 @@ export function createApiServer(): express.Application {
     if (!Array.isArray(assets) || assets.some(a => typeof a !== 'string')) {
       return res.status(400).json({ error: 'assets must be a string array' })
     }
-    const updated = await setConfig({ assets })
+    const updated = await setUserConfig(currentUserId(req), { assets })
     console.log(`[api] Active assets updated: ${assets.join(', ')}`)
     res.json(updated.assets)
   })
@@ -413,7 +618,7 @@ export function createApiServer(): express.Application {
     const limit = Math.min(parseInt(req.query.limit as string) || 100, 500)
     try {
       const response = await axios.get(`${ALPACA_DATA}/v1beta3/crypto/us/bars`, {
-        headers: alpacaHeaders(),
+        headers: await userAlpacaHeaders(req),
         params: { symbols: asset, timeframe, limit },
       })
       res.json(response.data.bars[asset] || [])
@@ -431,23 +636,25 @@ export function createApiServer(): express.Application {
     const outPath = path.join(process.cwd(), 'exports', `dataset_${Date.now()}.jsonl`)
     const { mkdirSync } = await import('fs')
     mkdirSync(path.join(process.cwd(), 'exports'), { recursive: true })
-    const count = await exportDataset(outPath)
+    const count = await exportDataset(outPath, isAdmin(req) ? '__global__' : currentUserId(req))
     res.json({ success: true, count, path: outPath })
   })
 
   // GET /api/equity/history - for drawdown chart
   app.get('/api/equity/history', async (req, res) => {
     const limit = parseInt(req.query.limit as string) || 200
-    const history = await EquityModel.find().sort({ ts: -1 }).limit(limit).lean()
+    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    const history = await EquityModel.find(scope).sort({ ts: -1 }).limit(limit).lean()
     res.json(history.reverse())
   })
 
   // GET /api/portfolio/detail - positions with market values
   app.get('/api/portfolio/detail', async (req, res) => {
     try {
+      const [base, headers] = await Promise.all([userAlpacaBase(req), userAlpacaHeaders(req)])
       const [accountRes, positionsRes] = await Promise.all([
-        axios.get(`${alpacaBase()}/v2/account`, { headers: alpacaHeaders() }),
-        axios.get(`${alpacaBase()}/v2/positions`, { headers: alpacaHeaders() }),
+        axios.get(`${base}/v2/account`, { headers }),
+        axios.get(`${base}/v2/positions`, { headers }),
       ])
       const cash = parseFloat(accountRes.data.cash)
       const equity = parseFloat(accountRes.data.equity)
@@ -468,8 +675,9 @@ export function createApiServer(): express.Application {
 
   // GET /api/stats/per-asset - P&L breakdown by asset
   app.get('/api/stats/per-asset', async (req, res) => {
+    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
     const perAsset = await TradeModel.aggregate([
-      { $match: { 'outcome.pnl_usd': { $exists: true } } },
+      { $match: { ...scope, 'outcome.pnl_usd': { $exists: true } } },
       { $group: {
         _id: '$decision.asset',
         total_pnl: { $sum: '$outcome.pnl_usd' },
@@ -489,12 +697,14 @@ export function createApiServer(): express.Application {
   // GET /api/risk/status
   app.get('/api/risk/status', async (req, res) => {
     try {
+      const [base, headers] = await Promise.all([userAlpacaBase(req), userAlpacaHeaders(req)])
       const [accountRes] = await Promise.all([
-        axios.get(`${alpacaBase()}/v2/account`, { headers: alpacaHeaders() }),
+        axios.get(`${base}/v2/account`, { headers }),
       ])
       const equity = parseFloat(accountRes.data.equity)
       const { getRiskStatus } = await import('./risk')
-      const status = await getRiskStatus(getConfig() as any, equity)
+      const cfg = await getUserConfig(currentUserId(req))
+      const status = await getRiskStatus(cfg as any, equity)
       res.json(status)
     } catch (err: any) {
       res.status(500).json({ error: err.message })
@@ -503,9 +713,11 @@ export function createApiServer(): express.Application {
 
   // GET /api/tokens/stats - aggregate token usage and cost
   app.get('/api/tokens/stats', async (req, res) => {
+    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
     const [totals, byModel, daily] = await Promise.all([
       // Overall totals
       TokenUsageModel.aggregate([
+        { $match: scope },
         { $group: {
           _id: null,
           total_input:  { $sum: '$input_tokens' },
@@ -516,6 +728,7 @@ export function createApiServer(): express.Application {
       ]),
       // Breakdown per model
       TokenUsageModel.aggregate([
+        { $match: scope },
         { $group: {
           _id:          '$llm_model',
           input_tokens: { $sum: '$input_tokens' },
@@ -527,7 +740,7 @@ export function createApiServer(): express.Application {
       ]),
       // Daily cost for the last 30 days
       TokenUsageModel.aggregate([
-        { $match: { ts: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } },
+        { $match: { ...scope, ts: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } },
         { $group: {
           _id: { $dateToString: { format: '%Y-%m-%d', date: '$ts' } },
           cost_usd:     { $sum: '$cost_usd' },
@@ -564,7 +777,8 @@ export function createApiServer(): express.Application {
   // GET /api/tokens/history?limit=200 - raw call log
   app.get('/api/tokens/history', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit as string) || 200, 1000)
-    const rows = await TokenUsageModel.find()
+    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    const rows = await TokenUsageModel.find(scope)
       .sort({ ts: -1 })
       .limit(limit)
       .lean()
@@ -573,8 +787,9 @@ export function createApiServer(): express.Application {
 
   // POST /api/config/risk - update risk + LLM settings
   app.post('/api/config/risk', async (req, res) => {
-    const { stopLossPct, takeProfitPct, maxDrawdownPct, maxOpenPositions, claudeModel, cycleMinutes,
+    const { stopLossPct, takeProfitPct, maxDrawdownPct, maxOpenPositions, claudeModel, cycleMinutes, marketDataMinutes,
             confidenceThreshold, kellyEnabled, consensusMode, consensusModel,
+            costAwareTrading, costLookbackCalls, costProfitRatio,
             trailingStopEnabled, trailingStopPct,
             activeStrategy, strategyParams, autoFallbackToLlm } = req.body
     const updates: any = {}
@@ -584,17 +799,21 @@ export function createApiServer(): express.Application {
     if (typeof maxOpenPositions === 'number')      updates.maxOpenPositions      = maxOpenPositions
     if (typeof claudeModel === 'string')           updates.claudeModel           = claudeModel
     if (typeof cycleMinutes === 'number')          updates.cycleMinutes          = cycleMinutes
+    if (typeof marketDataMinutes === 'number')     updates.marketDataMinutes     = marketDataMinutes
     if (typeof confidenceThreshold === 'number')   updates.confidenceThreshold   = confidenceThreshold
     if (typeof kellyEnabled === 'boolean')         updates.kellyEnabled          = kellyEnabled
     if (typeof consensusMode === 'boolean')        updates.consensusMode         = consensusMode
     if (typeof consensusModel === 'string')        updates.consensusModel        = consensusModel
+    if (typeof costAwareTrading === 'boolean')     updates.costAwareTrading      = costAwareTrading
+    if (typeof costLookbackCalls === 'number')     updates.costLookbackCalls     = costLookbackCalls
+    if (typeof costProfitRatio === 'number')       updates.costProfitRatio       = costProfitRatio
     if (typeof trailingStopEnabled === 'boolean')  updates.trailingStopEnabled   = trailingStopEnabled
     if (typeof trailingStopPct === 'number')       updates.trailingStopPct       = trailingStopPct
     if (typeof activeStrategy === 'string')        updates.activeStrategy        = activeStrategy
     if (strategyParams !== undefined)              updates.strategyParams        = strategyParams
     if (typeof autoFallbackToLlm === 'boolean')    updates.autoFallbackToLlm     = autoFallbackToLlm
-    await logAudit('config_change', JSON.stringify(req.body), 'admin', req)
-    const updated = await setConfig(updates)
+    await logAudit('config_change', JSON.stringify(req.body), currentUser(req), req)
+    const updated = await setUserConfig(currentUserId(req), updates)
     console.log('[api] Config updated:', updates)
     res.json(updated)
   })
@@ -602,7 +821,8 @@ export function createApiServer(): express.Application {
   // GET /api/audit?limit=100
   app.get('/api/audit', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit as string) || 100, 500)
-    const events = await AuditLogModel.find().sort({ ts: -1 }).limit(limit).lean()
+    const filter = isAdmin(req) ? {} : { user: currentUser(req) }
+    const events = await AuditLogModel.find(filter).sort({ ts: -1 }).limit(limit).lean()
     res.json({ events })
   })
 
@@ -640,12 +860,13 @@ export function createApiServer(): express.Application {
     }
     try {
       const { runBacktest } = await import('./backtest')
+      const userCfg = await getUserConfig(currentUserId(req))
       const result = await runBacktest({
         assets,
         startDate,
         endDate,
         cycleHours: typeof cycleHours === 'number' ? cycleHours : 24,
-        model:      typeof model === 'string' ? model : getConfig().claudeModel,
+        model:      typeof model === 'string' ? model : userCfg.claudeModel,
         mode:       mode === 'llm' ? 'llm' : 'rules',
         startEquity:    10000,
         maxPositionUsd: 500,
@@ -666,9 +887,10 @@ export function createApiServer(): express.Application {
   })
 
   // GET /api/equity/benchmark
-  app.get('/api/equity/benchmark', async (_req, res) => {
+  app.get('/api/equity/benchmark', async (req, res) => {
     try {
-      const history = await EquityModel.find().sort({ ts: 1 }).lean()
+      const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
+      const history = await EquityModel.find(scope).sort({ ts: 1 }).lean()
       if (!history.length) return res.json({ points: [], benchmarkAsset: 'BTC/USD' })
 
       const firstSnap = history[0]
@@ -676,7 +898,7 @@ export function createApiServer(): express.Application {
 
       // Fetch BTC/USD hourly bars from the start date to now
       const btcResponse = await axios.get(`${ALPACA_DATA}/v1beta3/crypto/us/bars`, {
-        headers: alpacaHeaders(),
+        headers: await userAlpacaHeaders(req),
         params: { symbols: 'BTC/USD', timeframe: '1H', start: firstTs, limit: 1000 },
       })
       const btcBars: any[] = btcResponse.data.bars?.['BTC/USD'] || []
@@ -710,7 +932,7 @@ export function createApiServer(): express.Application {
   app.get('/api/trades/reasoning', async (req, res) => {
     const limit  = Math.min(parseInt(req.query.limit as string) || 50, 200)
     const page   = parseInt(req.query.page as string) || 1
-    const filter: Record<string, any> = {}
+    const filter: Record<string, any> = isAdmin(req) ? {} : { userId: currentUserId(req) }
 
     if (req.query.asset)  filter['decision.asset']  = req.query.asset
     if (req.query.action) filter['decision.action'] = req.query.action
@@ -737,10 +959,11 @@ export function createApiServer(): express.Application {
   })
 
   // GET /api/strategy/params?strategyId=momentum
-  app.get('/api/strategy/params', requireAuth, (req, res) => {
+  app.get('/api/strategy/params', requireAuth, async (req, res) => {
     const { getStrategy: gs, mergeWithDefaults: mwd } = require('./strategies/registry')
     const strategyId = String(req.query.strategyId || 'momentum')
-    const saved = getConfig().strategyParams?.[strategyId] ?? {}
+    const cfg = await getUserConfig(currentUserId(req))
+    const saved = cfg.strategyParams?.[strategyId] ?? {}
     try {
       const strategy = gs(strategyId)
       const merged = mwd(strategy.params, saved as any)
@@ -754,9 +977,10 @@ export function createApiServer(): express.Application {
   app.post('/api/strategy/params', requireAuth, async (req, res) => {
     const { strategyId, params } = req.body
     if (!strategyId || !params) return res.status(400).json({ error: 'strategyId and params required' })
-    const current = getConfig().strategyParams ?? {}
-    await setConfig({ strategyParams: { ...current, [strategyId]: params } })
-    logAudit('strategy.params', `Updated params for ${strategyId}`, (req as any).user, req).catch(() => {})
+    const cfg = await getUserConfig(currentUserId(req))
+    const current = cfg.strategyParams ?? {}
+    await setUserConfig(currentUserId(req), { strategyParams: { ...current, [strategyId]: params } })
+    logAudit('strategy.params', `Updated params for ${strategyId}`, currentUser(req), req).catch(() => {})
     res.json({ success: true })
   })
 
@@ -766,8 +990,8 @@ export function createApiServer(): express.Application {
     const updates: any = {}
     if (activeStrategy !== undefined) updates.activeStrategy = activeStrategy
     if (autoFallbackToLlm !== undefined) updates.autoFallbackToLlm = autoFallbackToLlm
-    const cfg = await setConfig(updates)
-    logAudit('strategy.select', `Active strategy set to ${activeStrategy}`, (req as any).user, req).catch(() => {})
+    const cfg = await setUserConfig(currentUserId(req), updates)
+    logAudit('strategy.select', `Active strategy set to ${activeStrategy}`, currentUser(req), req).catch(() => {})
     res.json(cfg)
   })
 

@@ -38,14 +38,17 @@ export interface TradeOutcome {
 }
 
 export interface TradeRecord extends Document {
+  userId: string
   timestamp: Date
   market: Record<string, AssetSnapshot>
   portfolio: { cash_usd: number; positions: Record<string, number> }
   decision: TradeDecision
   outcome?: TradeOutcome
   order_id?: string
+  approval_mode: 'manual' | 'auto'
   approved: boolean
   executed: boolean
+  execution_error?: string
   sl_price?: number
   tp_price?: number
   close_reason?: 'sl' | 'tp' | 'manual' | 'timeout'
@@ -53,6 +56,7 @@ export interface TradeRecord extends Document {
 }
 
 const TradeRecordSchema = new Schema<TradeRecord>({
+  userId: { type: String, required: true, index: true },
   timestamp: { type: Date, default: Date.now, index: true },
   market: { type: Schema.Types.Mixed, required: true },
   portfolio: { type: Schema.Types.Mixed, required: true },
@@ -71,26 +75,31 @@ const TradeRecordSchema = new Schema<TradeRecord>({
     correct: Boolean,
   },
   order_id: String,
+  approval_mode: { type: String, enum: ['manual', 'auto'], default: 'manual' },
   approved: { type: Boolean, default: false },
   executed: { type: Boolean, default: false },
+  execution_error: String,
   sl_price: { type: Number },
   tp_price: { type: Number },
   close_reason: { type: String, enum: ['sl', 'tp', 'manual', 'timeout'] },
   closed_at: { type: Date },
 })
+TradeRecordSchema.index({ userId: 1, timestamp: -1 })
 
 export const TradeModel = mongoose.model<TradeRecord>('Trade', TradeRecordSchema)
 
 // ─── Agent config (single document, upserted by key) ─────────────────────────
 export interface ConfigRecord extends Document {
   key: string
+  userId?: string
   autoApprove: boolean
   assets: string[]
   [key: string]: any
 }
 
 const ConfigSchema = new Schema<ConfigRecord>({
-  key:                 { type: String, default: 'agent', unique: true },
+  key:                 { type: String, default: 'agent' },
+  userId:              { type: String, default: '__global__', index: true },
   autoApprove:         { type: Boolean, default: false },
   assets:              { type: [String], default: [] },
   stopLossPct:         { type: Number, default: 5 },
@@ -99,21 +108,27 @@ const ConfigSchema = new Schema<ConfigRecord>({
   maxOpenPositions:    { type: Number, default: 3 },
   claudeModel:         { type: String, default: '' },
   cycleMinutes:        { type: Number, default: 30 },
+  marketDataMinutes:   { type: Number, default: 5 },
   confidenceThreshold: { type: Number, default: 0 },
   kellyEnabled:        { type: Boolean, default: false },
   consensusMode:       { type: Boolean, default: false },
   consensusModel:      { type: String, default: '' },
+  costAwareTrading:    { type: Boolean, default: true },
+  costLookbackCalls:   { type: Number, default: 20 },
+  costProfitRatio:     { type: Number, default: 1 },
   trailingStopEnabled: { type: Boolean, default: false },
   trailingStopPct:     { type: Number, default: 2.5 },
   activeStrategy:    { type: String, default: 'llm' },
   strategyParams:    { type: Schema.Types.Mixed, default: {} },
   autoFallbackToLlm: { type: Boolean, default: false },
 })
+ConfigSchema.index({ key: 1, userId: 1 }, { unique: true })
 
 export const ConfigModel = mongoose.model<ConfigRecord>('Config', ConfigSchema)
 
 // ─── Equity snapshots (for drawdown chart) ───────────────────────────────────
 export interface EquitySnapshotDoc extends Document {
+  userId: string
   ts: Date
   equity: number
   cash: number
@@ -121,6 +136,7 @@ export interface EquitySnapshotDoc extends Document {
 }
 
 const EquitySnapshotSchema = new Schema<EquitySnapshotDoc>({
+  userId: { type: String, required: true, index: true },
   ts:     { type: Date, default: Date.now, index: true },
   equity: { type: Number, required: true },
   cash:   { type: Number, required: true },
@@ -131,6 +147,7 @@ export const EquityModel = mongoose.model<EquitySnapshotDoc>('EquitySnapshot', E
 
 // ─── Token usage (LLM cost tracking) ─────────────────────────────────────────
 export interface TokenUsageDoc extends Document {
+  userId: string
   ts: Date
   llm_model: string
   input_tokens: number
@@ -140,6 +157,7 @@ export interface TokenUsageDoc extends Document {
 }
 
 const TokenUsageSchema = new Schema<TokenUsageDoc>({
+  userId:        { type: String, required: true, index: true },
   ts:            { type: Date, default: Date.now, index: true },
   llm_model:     { type: String, required: true },
   input_tokens:  { type: Number, required: true },
@@ -154,25 +172,44 @@ export const TokenUsageModel = mongoose.model<TokenUsageDoc>('TokenUsage', Token
 export interface UserDoc extends Document {
   username: string
   passwordHash: string
+  role: 'admin' | 'user'
+  blocked: boolean
+  blockedAt?: Date
+  blockedReason?: string
+  twoFactorEnabled: boolean
+  twoFactorSecret?: string
+  twoFactorTempSecret?: string
 }
 
 const UserSchema = new Schema<UserDoc>({
   username:     { type: String, required: true, unique: true },
   passwordHash: { type: String, required: true },
+  role: { type: String, enum: ['admin', 'user'], default: 'user' },
+  blocked: { type: Boolean, default: false, index: true },
+  blockedAt: { type: Date },
+  blockedReason: { type: String },
+  twoFactorEnabled: { type: Boolean, default: false },
+  twoFactorSecret: { type: String },
+  twoFactorTempSecret: { type: String },
 })
+TokenUsageSchema.index({ userId: 1, ts: -1 })
+EquitySnapshotSchema.index({ userId: 1, ts: -1 })
 
 export const UserModel = mongoose.model<UserDoc>('User', UserSchema)
 
 // ─── API Keys (stored in DB, editable from dashboard) ────────────────────────
 export interface ApiKeyDoc extends Document {
+  userId?: string
   key: string
   value: string
 }
 
 const ApiKeySchema = new Schema<ApiKeyDoc>({
-  key:   { type: String, required: true, unique: true },
+  userId: { type: String, default: '__global__', index: true },
+  key:   { type: String, required: true },
   value: { type: String, required: true },
 })
+ApiKeySchema.index({ userId: 1, key: 1 }, { unique: true })
 
 export const ApiKeyModel = mongoose.model<ApiKeyDoc>('ApiKey', ApiKeySchema)
 

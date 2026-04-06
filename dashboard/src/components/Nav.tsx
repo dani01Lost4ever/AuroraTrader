@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Page } from '../App'
 import { api } from '../api'
-import type { LivePrices } from '../api'
+import type { LivePrices, AuthUser } from '../api'
 
 const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: 'overview',  label: 'Overview',  icon: '▦' },
@@ -20,6 +20,7 @@ interface NavProps {
   current: Page
   onNavigate: (page: Page) => void
   onLogout: () => void
+  me: AuthUser | null
 }
 
 function PriceTicker() {
@@ -72,7 +73,10 @@ function PriceTicker() {
   )
 }
 
-export function Nav({ current, onNavigate, onLogout }: NavProps) {
+export function Nav({ current, onNavigate, onLogout, me }: NavProps) {
+  const items = me?.role === 'admin'
+    ? [...NAV_ITEMS, { id: 'admin' as Page, label: 'Engines', icon: '⚑' }]
+    : NAV_ITEMS
   return (
     <nav style={{
       position: 'sticky', top: 0, zIndex: 100,
@@ -94,7 +98,7 @@ export function Nav({ current, onNavigate, onLogout }: NavProps) {
       </div>
 
       {/* Nav items */}
-      {NAV_ITEMS.map(item => (
+      {items.map(item => (
         <button
           key={item.id}
           onClick={() => onNavigate(item.id)}

@@ -1,13 +1,14 @@
 import axios from 'axios'
 import { AssetSnapshot } from './schema'
 import { getKey } from './keys'
+import type { AlpacaCredentials } from './executor'
 
 const DATA = 'https://data.alpaca.markets'
 
-const base    = () => getKey('alpaca_base_url') || 'https://paper-api.alpaca.markets'
-const headers = () => ({
-  'APCA-API-KEY-ID':     getKey('alpaca_api_key')    || '',
-  'APCA-API-SECRET-KEY': getKey('alpaca_api_secret') || '',
+const base = (creds?: AlpacaCredentials) => creds?.alpaca_base_url || getKey('alpaca_base_url') || 'https://paper-api.alpaca.markets'
+const headers = (creds?: AlpacaCredentials) => ({
+  'APCA-API-KEY-ID':     creds?.alpaca_api_key || getKey('alpaca_api_key') || '',
+  'APCA-API-SECRET-KEY': creds?.alpaca_api_secret || getKey('alpaca_api_secret') || '',
 })
 
 export interface Portfolio {
@@ -17,10 +18,10 @@ export interface Portfolio {
 }
 
 // Fetch current portfolio from Alpaca paper account
-export async function fetchPortfolio(): Promise<Portfolio> {
+export async function fetchPortfolio(creds?: AlpacaCredentials): Promise<Portfolio> {
   const [accountRes, positionsRes] = await Promise.all([
-    axios.get(`${base()}/v2/account`, { headers: headers() }),
-    axios.get(`${base()}/v2/positions`, { headers: headers() }),
+    axios.get(`${base(creds)}/v2/account`, { headers: headers(creds) }),
+    axios.get(`${base(creds)}/v2/positions`, { headers: headers(creds) }),
   ])
 
   const positions: Record<string, number> = {}
@@ -37,7 +38,8 @@ export async function fetchPortfolio(): Promise<Portfolio> {
 
 // Fetch 100 hourly bars + 60 daily bars and compute a full indicator suite
 export async function fetchMarketSnapshot(
-  assets: string[]
+  assets: string[],
+  creds?: AlpacaCredentials,
 ): Promise<Record<string, AssetSnapshot>> {
   const snapshot: Record<string, AssetSnapshot> = {}
 
@@ -50,11 +52,11 @@ export async function fetchMarketSnapshot(
       // Fetch hourly (100 bars for indicator warmup) and daily (60 bars for trend) in parallel
       const [barRes, dailyRes] = await Promise.all([
         axios.get(`${DATA}/v1beta3/crypto/us/bars`, {
-          headers: headers(),
+          headers: headers(creds),
           params: { symbols: asset, timeframe: '1H', start: hourlyStart, limit: 100 },
         }),
         axios.get(`${DATA}/v1beta3/crypto/us/bars`, {
-          headers: headers(),
+          headers: headers(creds),
           params: { symbols: asset, timeframe: '1D', start: dailyStart, limit: 60 },
         }),
       ])
@@ -235,12 +237,12 @@ function computeATR(bars: any[], period = 14): number | null {
 }
 
 // Lightweight price fetch for SL/TP monitoring (no indicator computation)
-export async function fetchLatestPrices(assets: string[]): Promise<Record<string, AssetSnapshot>> {
+export async function fetchLatestPrices(assets: string[], creds?: AlpacaCredentials): Promise<Record<string, AssetSnapshot>> {
   const snapshot: Record<string, AssetSnapshot> = {}
   for (const asset of assets) {
     try {
       const res = await axios.get(`${DATA}/v1beta3/crypto/us/latest/bars`, {
-        headers: headers(),
+        headers: headers(creds),
         params: { symbols: asset },
       })
       const bar = res.data.bars?.[asset]

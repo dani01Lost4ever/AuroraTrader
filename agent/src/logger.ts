@@ -24,7 +24,12 @@ export async function logDecision(
   portfolio: Portfolio,
   decision: Decision,
   userId: string,
-  options: { approved?: boolean; approval_mode?: 'manual' | 'auto' } = {}
+  options: {
+    approved?: boolean
+    approval_mode?: 'manual' | 'auto'
+    strategy_id?: string
+    strategy_label?: string
+  } = {}
 ): Promise<TradeRecord> {
   const record = new TradeModel({
     userId,
@@ -35,6 +40,8 @@ export async function logDecision(
       positions: portfolio.positions,
     },
     decision,
+    strategy_id: options.strategy_id,
+    strategy_label: options.strategy_label,
     approval_mode: options.approval_mode ?? 'manual',
     approved: options.approved ?? false,
     executed: false,

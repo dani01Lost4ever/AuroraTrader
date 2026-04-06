@@ -47,6 +47,14 @@ function detectRegime(market: Record<string, AssetSnapshot>): string {
   return `Sideways (BTC ${(pctFromSma50 >= 0 ? '+' : '')}${pctFromSma50.toFixed(1)}% vs SMA50)`
 }
 
+function resolveDecisionStrategy(activeId: string, activeLabel: string, reasoning: string): { id: string; label: string } {
+  if (activeId !== 'auto') return { id: activeId, label: activeLabel }
+  const match = reasoning.match(/^\[Auto(?:->|→)([^\]]+)\]/i)
+  if (!match) return { id: 'auto', label: activeLabel }
+  const delegated = match[1].trim()
+  return { id: 'auto', label: delegated ? `Auto -> ${delegated}` : activeLabel }
+}
+
 function runtimeView(rt: UserRuntime) {
   return {
     userId: rt.userId,
@@ -306,7 +314,8 @@ export class EngineManager {
       ])
 
       const regime = detectRegime(market)
-      const strategy = getStrategy(cfg.activeStrategy || 'llm')
+      const activeStrategyId = cfg.activeStrategy || 'llm'
+      const strategy = getStrategy(activeStrategyId)
       const resolvedParams = mergeWithDefaults(strategy.params, (cfg.strategyParams?.[cfg.activeStrategy] as any) ?? {})
 
       let decisions: Decision[] = []
@@ -344,9 +353,12 @@ export class EngineManager {
         await supersedePendingManualApprovals(rt.userId, 'Superseded by newer signal')
       }
 
+      const decisionStrategy = resolveDecisionStrategy(activeStrategyId, strategy.label, decision.reasoning)
       const record = await logDecision(market, portfolio, decision, rt.userId, {
         approved: cfg.autoApprove,
         approval_mode: cfg.autoApprove ? 'auto' : 'manual',
+        strategy_id: decisionStrategy.id,
+        strategy_label: decisionStrategy.label,
       })
       broadcast('trade:new', record.toObject(), rt.userId)
 
@@ -360,6 +372,8 @@ export class EngineManager {
             broadcast('trade:executed', executedRecord, rt.userId)
           } catch (err: any) {
             await markExecutionFailed(record._id.toString(), err.message)
+            const failedRecord = await TradeModel.findById(record._id).lean()
+            if (failedRecord) broadcast('trade:executed', failedRecord, rt.userId)
           }
         }
       }

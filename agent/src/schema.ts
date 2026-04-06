@@ -43,6 +43,8 @@ export interface TradeRecord extends Document {
   market: Record<string, AssetSnapshot>
   portfolio: { cash_usd: number; positions: Record<string, number> }
   decision: TradeDecision
+  strategy_id?: string
+  strategy_label?: string
   outcome?: TradeOutcome
   order_id?: string
   approval_mode: 'manual' | 'auto'
@@ -67,6 +69,8 @@ const TradeRecordSchema = new Schema<TradeRecord>({
     confidence: { type: Number, required: true },
     reasoning: { type: String, required: true },
   },
+  strategy_id: String,
+  strategy_label: String,
   outcome: {
     pnl_pct: Number,
     pnl_usd: Number,

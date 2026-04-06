@@ -16,6 +16,14 @@ function fmt(ts: string) {
   return new Date(ts).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
 
+function inferStrategyLabel(trade: Trade): string {
+  if (trade.strategy_label) return trade.strategy_label
+  if (trade.strategy_id) return trade.strategy_id.toUpperCase()
+  const match = trade.decision.reasoning.match(/^\[Auto(?:->|→)([^\]]+)\]/i)
+  if (match) return `Auto -> ${match[1].trim()}`
+  return '—'
+}
+
 const PIE_COLORS = [
   'var(--accent)', 'var(--accent2)', 'var(--green)', 'var(--warn)', 'var(--danger)',
   '#8884d8', '#82ca9d', '#ffc658', '#ff8042', '#a4de6c',
@@ -221,7 +229,7 @@ export function Overview() {
       ])
       setStats(s)
       setTrades(t.trades)
-      setPending(p)
+      setPending(p.filter(x => !x.execution_error))
       setConfig(cfg)
       setEquity(eq)
       if (port) setPortfolio(port)
@@ -283,7 +291,7 @@ export function Overview() {
     if (ev.type === 'trade:new') {
       const trade = ev.data as Trade
       setTrades(prev => [trade, ...prev].slice(0, 100))
-      if (trade.decision.action !== 'hold' && !trade.approved && (trade.approval_mode ?? 'manual') === 'manual') {
+      if (trade.decision.action !== 'hold' && !trade.approved && !trade.execution_error && (trade.approval_mode ?? 'manual') === 'manual') {
         setPending(prev => [trade, ...prev.filter(p => p._id !== trade._id)])
         sendNotif(
           `New ${trade.decision.action.toUpperCase()} signal`,
@@ -349,6 +357,7 @@ export function Overview() {
 
   // Per-asset bar
   const barData = perAsset.map(a => ({ asset: a.asset.replace('/USD', ''), pnl: a.total_pnl, wins: a.win_rate }))
+  const failedTrades = trades.filter(t => !!t.execution_error)
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh', fontFamily: 'var(--font-mono)', color: 'var(--muted)' }}>
@@ -716,53 +725,83 @@ export function Overview() {
         </div>
       )}
 
-      {/* ── Agent logs ── */}
-      <div style={{ marginBottom: 28 }}>
+      {/* ── Agent logs + Live logs + Failed trades ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px,1fr))', gap: 12, marginBottom: 28 }}>
         <LogsPanel />
-      </div>
 
-      {/* ── Live Logs panel ── */}
-      <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 8, marginBottom: 28, overflow: 'hidden' }}>
-        {/* Header */}
-        <div
-          onClick={() => setLogsOpen(o => !o)}
-          style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 20px', borderBottom: logsOpen ? '1px solid var(--border)' : 'none', cursor: 'pointer', userSelect: 'none' }}
-        >
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', letterSpacing: '0.08em', flex: 1 }}>
-            LIVE LOGS
-          </span>
-          {wsStatus === 'live' && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--green)' }}>
-              <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--green)', display: 'inline-block', animation: 'pulse 2s ease infinite' }} />
-              LIVE
+        <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <div
+            onClick={() => setLogsOpen(o => !o)}
+            style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 20px', borderBottom: logsOpen ? '1px solid var(--border)' : 'none', cursor: 'pointer', userSelect: 'none' }}
+          >
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', letterSpacing: '0.08em', flex: 1 }}>
+              LIVE LOGS
             </span>
+            {wsStatus === 'live' && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--green)' }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--green)', display: 'inline-block', animation: 'pulse 2s ease infinite' }} />
+                LIVE
+              </span>
+            )}
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)' }}>{logsOpen ? '▲' : '▼'}</span>
+          </div>
+          {logsOpen && (
+            <div style={{ height: 280, overflowY: 'auto', padding: '8px 16px', background: 'var(--bg3)' }}>
+              {liveLogs.length === 0 ? (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)' }}>No logs yet...</span>
+              ) : (
+                liveLogs.map((log, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 2, fontSize: 10, fontFamily: 'var(--font-mono)', lineHeight: 1.5 }}>
+                    <span style={{ color: 'var(--muted)', flexShrink: 0 }}>
+                      {new Date(log.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </span>
+                    <span style={{
+                      flexShrink: 0, minWidth: 36, textTransform: 'uppercase', fontSize: 9, letterSpacing: '0.06em',
+                      color: log.level === 'error' ? 'var(--danger)' : log.level === 'warn' ? 'var(--warn)' : 'var(--muted)',
+                    }}>
+                      [{log.level}]
+                    </span>
+                    <span style={{ color: log.level === 'error' ? 'var(--danger)' : log.level === 'warn' ? 'var(--warn)' : 'var(--text)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                      {log.msg}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
           )}
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)' }}>{logsOpen ? '▲' : '▼'}</span>
         </div>
-        {logsOpen && (
-          <div style={{ height: 200, overflowY: 'auto', padding: '8px 16px', background: 'var(--bg3)' }}>
-            {liveLogs.length === 0 ? (
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)' }}>No logs yet...</span>
+
+        <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', padding: '10px 16px', borderBottom: '1px solid var(--border)' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--danger)', letterSpacing: '0.08em', flex: 1 }}>
+              FAILED TRADES ({failedTrades.length})
+            </span>
+          </div>
+          <div style={{ height: 280, overflowY: 'auto', padding: '8px 12px' }}>
+            {failedTrades.length === 0 ? (
+              <div style={{ padding: '40px 8px', textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)' }}>
+                No failed trades
+              </div>
             ) : (
-              liveLogs.map((log, i) => (
-                <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 2, fontSize: 10, fontFamily: 'var(--font-mono)', lineHeight: 1.5 }}>
-                  <span style={{ color: 'var(--muted)', flexShrink: 0 }}>
-                    {new Date(log.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                  </span>
-                  <span style={{
-                    flexShrink: 0, minWidth: 36, textTransform: 'uppercase', fontSize: 9, letterSpacing: '0.06em',
-                    color: log.level === 'error' ? 'var(--danger)' : log.level === 'warn' ? 'var(--warn)' : 'var(--muted)',
-                  }}>
-                    [{log.level}]
-                  </span>
-                  <span style={{ color: log.level === 'error' ? 'var(--danger)' : log.level === 'warn' ? 'var(--warn)' : 'var(--text)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                    {log.msg}
-                  </span>
+              failedTrades.map(t => (
+                <div key={t._id} style={{ padding: '8px 6px', borderBottom: '1px solid var(--border2)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{fmt(t.timestamp)}</span>
+                    <ActionBadge action={t.decision.action} />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>{t.decision.asset}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)' }}>${t.decision.amount_usd.toLocaleString()}</span>
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--accent)', marginBottom: 4 }}>
+                    Strategy: {inferStrategyLabel(t)}
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--danger)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {t.execution_error}
+                  </div>
                 </div>
               ))
             )}
           </div>
-        )}
+        </div>
       </div>
 
       {/* ── Fine-tuning pipeline ── */}
@@ -779,7 +818,7 @@ export function Overview() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                {['Time', 'Action', 'Asset', 'Amount', 'Price', 'RSI', 'Confidence', 'SL / TP', 'P&L', 'Status'].map(h => (
+                {['Time', 'Action', 'Asset', 'Strategy', 'Amount', 'Price', 'RSI', 'Confidence', 'SL / TP', 'P&L', 'Status'].map(h => (
                   <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.08em', fontWeight: 400, whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -788,6 +827,7 @@ export function Overview() {
               {trades.map((t, i) => {
                 const snap = t.market[t.decision.asset]
                 const pnl = t.outcome?.pnl_usd
+                const strategyLabel = inferStrategyLabel(t)
                 return (
                   <tr
                     key={t._id}
@@ -804,6 +844,7 @@ export function Overview() {
                     <td style={{ padding: '10px 16px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{fmt(t.timestamp)}</td>
                     <td style={{ padding: '10px 16px' }}><ActionBadge action={t.decision.action} /></td>
                     <td style={{ padding: '10px 16px', fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600 }}>{t.decision.asset}</td>
+                    <td style={{ padding: '10px 16px', fontFamily: 'var(--font-mono)', fontSize: 11, color: strategyLabel === '—' ? 'var(--muted)' : 'var(--accent2)', whiteSpace: 'nowrap' }}>{strategyLabel}</td>
                     <td style={{ padding: '10px 16px', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--accent)' }}>${t.decision.amount_usd.toLocaleString()}</td>
                     <td style={{ padding: '10px 16px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{snap ? `$${snap.price.toLocaleString()}` : '—'}</td>
                     <td style={{ padding: '10px 16px', fontFamily: 'var(--font-mono)', fontSize: 12, color: snap?.rsi_14 !== undefined ? (snap.rsi_14 > 70 ? 'var(--danger)' : snap.rsi_14 < 30 ? 'var(--green)' : 'var(--text)') : 'var(--muted)' }}>
@@ -828,7 +869,7 @@ export function Overview() {
                 )
               })}
               {trades.length === 0 && (
-                <tr><td colSpan={10} style={{ padding: '40px 16px', textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--muted)' }}>
+                <tr><td colSpan={11} style={{ padding: '40px 16px', textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--muted)' }}>
                   Waiting for first agent cycle...
                 </td></tr>
               )}

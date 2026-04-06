@@ -20,6 +20,7 @@ export interface Trade {
   market: Record<string, AssetSnapshot>
   portfolio: { cash_usd: number; positions: Record<string, number> }
   decision: TradeDecision; outcome?: TradeOutcome
+  strategy_id?: string; strategy_label?: string
   order_id?: string; approval_mode?: 'manual' | 'auto'; approved: boolean; executed: boolean
   execution_error?: string
   sl_price?: number; tp_price?: number

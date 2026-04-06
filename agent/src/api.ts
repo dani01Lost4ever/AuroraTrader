@@ -3,7 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
 import { TradeModel, EquityModel, TokenUsageModel, AuditLogModel, PromptModel, BacktestResultModel, OptimizeResultModel, UserModel } from './schema'
 import { executeOrder } from './executor'
-import { markExecuted, markExecutionFailed, exportDataset } from './logger'
+import { markExecuted, markExecutionFailed, exportDataset, expireStaleManualApprovals } from './logger'
 import { getLogs } from './logs'
 import { getConfig, getUserConfig, setUserConfig } from './config'
 import {
@@ -18,7 +18,7 @@ import {
   changePasswordHandler,
   isAdminUser,
 } from './auth'
-import { getKey, getMaskedKeysForUser, getUserKey, getUserKeySet, setUserKey, KEY_NAMES } from './keys'
+import { getKey, getMaskedKeysForUser, getUserKey, getUserKeySet, setUserKey, KEY_NAMES, listUserWallets, createUserWallet, activateUserWallet, deleteUserWallet } from './keys'
 import { logAudit } from './audit'
 import { engineManager } from './engineManager'
 import type { KeyName } from './keys'
@@ -32,6 +32,7 @@ const MANUAL_PENDING_FILTER = {
   approval_mode: { $ne: 'auto' },
   'decision.action': { $ne: 'hold' },
 }
+const MANUAL_APPROVAL_TTL_MINUTES = Math.max(1, parseInt(process.env.MANUAL_APPROVAL_TTL_MINUTES || '30', 10))
 
 const currentUser = (req: express.Request) => (req as any).user?.username || 'unknown'
 const currentUserId = (req: express.Request) => (req as any).user?.id || ''
@@ -327,6 +328,47 @@ export function createApiServer(): express.Application {
     res.json(await getMaskedKeysForUser(userId))
   })
 
+  // GET /api/wallets - per-user Alpaca wallets
+  app.get('/api/wallets', async (req, res) => {
+    const wallets = await listUserWallets(currentUserId(req))
+    res.json({ wallets })
+  })
+
+  // POST /api/wallets - create wallet
+  app.post('/api/wallets', async (req, res) => {
+    const { name, alpaca_api_key, alpaca_api_secret, alpaca_base_url } = req.body ?? {}
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name required' })
+    if (!alpaca_api_key || !alpaca_api_secret) return res.status(400).json({ error: 'alpaca_api_key and alpaca_api_secret required' })
+    try {
+      const wallet = await createUserWallet(currentUserId(req), {
+        name,
+        alpaca_api_key,
+        alpaca_api_secret,
+        alpaca_base_url,
+      })
+      await logAudit('wallet.create', wallet.name, currentUser(req), req)
+      res.status(201).json({ wallet })
+    } catch (e: any) {
+      res.status(400).json({ error: e.message || 'Unable to create wallet' })
+    }
+  })
+
+  // POST /api/wallets/:walletId/activate - switch active wallet
+  app.post('/api/wallets/:walletId/activate', async (req, res) => {
+    const ok = await activateUserWallet(currentUserId(req), req.params.walletId)
+    if (!ok) return res.status(404).json({ error: 'Wallet not found' })
+    await logAudit('wallet.activate', req.params.walletId, currentUser(req), req)
+    res.json({ success: true })
+  })
+
+  // DELETE /api/wallets/:walletId - remove wallet
+  app.delete('/api/wallets/:walletId', async (req, res) => {
+    const ok = await deleteUserWallet(currentUserId(req), req.params.walletId)
+    if (!ok) return res.status(404).json({ error: 'Wallet not found' })
+    await logAudit('wallet.delete', req.params.walletId, currentUser(req), req)
+    res.json({ success: true })
+  })
+
   // POST /api/keys - set a single key
   app.post('/api/keys', async (req, res) => {
     const { key, value } = req.body
@@ -396,6 +438,7 @@ export function createApiServer(): express.Application {
 
   // GET /api/trades/pending - unapproved non-hold decisions
   app.get('/api/trades/pending', async (req, res) => {
+    await expireStaleManualApprovals(currentUserId(req), MANUAL_APPROVAL_TTL_MINUTES)
     const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
     const pending = await TradeModel.find({ ...MANUAL_PENDING_FILTER, ...scope })
       .sort({ timestamp: -1 })
@@ -435,6 +478,11 @@ export function createApiServer(): express.Application {
     if (!record) return res.status(404).json({ error: 'Not found' })
     if (!isAdmin(req) && record.userId !== currentUserId(req)) return res.status(403).json({ error: 'Forbidden' })
     if (record.approved) return res.status(400).json({ error: 'Already approved' })
+    const ageMs = Date.now() - new Date(record.timestamp).getTime()
+    if (ageMs > MANUAL_APPROVAL_TTL_MINUTES * 60_000) {
+      await markExecutionFailed(record._id.toString(), `Manual approval expired after ${MANUAL_APPROVAL_TTL_MINUTES} minutes`)
+      return res.status(409).json({ error: 'Trade request expired; wait for a fresh signal' })
+    }
 
     try {
       const keys = await getUserKeySet(record.userId)

@@ -205,7 +205,6 @@ export function Overview() {
   // Live logs
   const [liveLogs, setLiveLogs]       = useState<LogEntry[]>([])
   const [logsOpen, setLogsOpen]       = useState(true)
-  const logsEndRef                    = useRef<HTMLDivElement | null>(null)
 
   // ── data loaders ──────────────────────────────────────────────────────────
   const loadCore = useCallback(async () => {
@@ -268,12 +267,6 @@ export function Overview() {
     return () => clearInterval(id)
   }, [])
 
-  // Auto-scroll live logs to bottom on new messages
-  useEffect(() => {
-    if (logsOpen && logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [liveLogs, logsOpen])
 
   // ── WebSocket live updates ─────────────────────────────────────────────
   useSocket(useCallback((ev) => {
@@ -768,7 +761,6 @@ export function Overview() {
                 </div>
               ))
             )}
-            <div ref={logsEndRef} />
           </div>
         )}
       </div>

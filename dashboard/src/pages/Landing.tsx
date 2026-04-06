@@ -26,6 +26,7 @@ export function Landing({ onEnter }: LandingProps) {
     <div className="landing-shell" style={{ minHeight: '100vh', position: 'relative', overflow: 'hidden', padding: '22px 18px 30px' }}>
       <div className="landing-bg-orb landing-bg-orb-a" />
       <div className="landing-bg-orb landing-bg-orb-b" />
+      <div className="landing-bg-orb landing-bg-orb-c" />
       <div className="landing-bg-grid" />
 
       <div style={{ maxWidth: 1180, margin: '0 auto', position: 'relative', zIndex: 1 }}>

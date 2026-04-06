@@ -5,6 +5,13 @@ import { Portfolio, fetchMarketSnapshot } from './poller'
 import { AssetSnapshot } from './schema'
 import type { AlpacaCredentials } from './executor'
 
+const MANUAL_PENDING_SCOPE = {
+  approved: false,
+  executed: false,
+  approval_mode: { $ne: 'auto' as const },
+  'decision.action': { $ne: 'hold' as const },
+}
+
 export async function connectDB(): Promise<void> {
   const uri = process.env.MONGO_URI || 'mongodb://localhost:27017/trading-agent'
   await mongoose.connect(uri)
@@ -59,6 +66,36 @@ export async function markExecutionFailed(
     executed: false,
     execution_error: errorMessage,
   })
+}
+
+export async function expireStaleManualApprovals(userId: string, ttlMinutes: number): Promise<number> {
+  if (ttlMinutes <= 0) return 0
+  const cutoff = new Date(Date.now() - ttlMinutes * 60_000)
+  const res = await TradeModel.updateMany(
+    { userId, ...MANUAL_PENDING_SCOPE, timestamp: { $lt: cutoff } },
+    {
+      approved: true,
+      executed: false,
+      execution_error: `Manual approval expired after ${ttlMinutes} minutes`,
+      close_reason: 'timeout',
+      closed_at: new Date(),
+    }
+  )
+  return res.modifiedCount ?? 0
+}
+
+export async function supersedePendingManualApprovals(userId: string, reason = 'Superseded by newer signal'): Promise<number> {
+  const res = await TradeModel.updateMany(
+    { userId, ...MANUAL_PENDING_SCOPE },
+    {
+      approved: true,
+      executed: false,
+      execution_error: reason,
+      close_reason: 'timeout',
+      closed_at: new Date(),
+    }
+  )
+  return res.modifiedCount ?? 0
 }
 
 // Cron job: resolve outcomes for trades older than OUTCOME_RESOLVE_HOURS

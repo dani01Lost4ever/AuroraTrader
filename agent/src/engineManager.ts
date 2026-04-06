@@ -5,7 +5,7 @@ import { getDecisions, type Decision } from './brain'
 import { getUserConfig, type AgentConfig } from './config'
 import { getUserKeySet } from './keys'
 import { getStrategy, mergeWithDefaults } from './strategies/registry'
-import { logDecision, markExecuted, markExecutionFailed, resolveOutcomes } from './logger'
+import { logDecision, markExecuted, markExecutionFailed, resolveOutcomes, supersedePendingManualApprovals } from './logger'
 import { executeOrder } from './executor'
 import { getRiskStatus, kellyPositionSize, monitorStopLossTakeProfit, recordEquitySnapshot } from './risk'
 import { broadcast } from './ws'
@@ -338,6 +338,10 @@ export class EngineManager {
       }
       if (cfg.kellyEnabled && decision.action !== 'hold') {
         decision.amount_usd = await kellyPositionSize(decision.asset, decision.amount_usd, MAX_POSITION_USD, rt.userId)
+      }
+
+      if (!cfg.autoApprove && decision.action !== 'hold') {
+        await supersedePendingManualApprovals(rt.userId, 'Superseded by newer signal')
       }
 
       const record = await logDecision(market, portfolio, decision, rt.userId, {

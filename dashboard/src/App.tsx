@@ -15,8 +15,9 @@ import { Landing } from './pages/Landing'
 import { auth, api } from './api'
 import type { AuthUser } from './api'
 import { AdminEngines } from './pages/AdminEngines'
+import { Profile } from './pages/Profile'
 
-export type Page = 'overview' | 'charts' | 'assets' | 'tokens' | 'settings' | 'strategies' | 'backtest' | 'reasoning' | 'auditlog' | 'wiki' | 'admin'
+export type Page = 'overview' | 'charts' | 'assets' | 'tokens' | 'settings' | 'strategies' | 'backtest' | 'reasoning' | 'auditlog' | 'wiki' | 'admin' | 'profile'
 type PublicPage = 'landing' | 'login'
 
 export function App() {
@@ -72,6 +73,7 @@ export function App() {
         {page === 'auditlog'  && <AuditLog />}
         {page === 'wiki'      && <Wiki />}
         {page === 'admin'     && me?.role === 'admin' && <AdminEngines />}
+        {page === 'profile'   && <Profile me={me} />}
       </main>
     </div>
   )

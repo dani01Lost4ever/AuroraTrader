@@ -213,6 +213,32 @@ ApiKeySchema.index({ userId: 1, key: 1 }, { unique: true })
 
 export const ApiKeyModel = mongoose.model<ApiKeyDoc>('ApiKey', ApiKeySchema)
 
+// Wallets (per-user Alpaca account profiles)
+export interface WalletDoc extends Document {
+  userId: string
+  name: string
+  active: boolean
+  alpaca_api_key: string
+  alpaca_api_secret: string
+  alpaca_base_url: string
+  createdAt: Date
+  updatedAt: Date
+}
+
+const WalletSchema = new Schema<WalletDoc>({
+  userId: { type: String, required: true, index: true },
+  name: { type: String, required: true },
+  active: { type: Boolean, default: false, index: true },
+  alpaca_api_key: { type: String, default: '' },
+  alpaca_api_secret: { type: String, default: '' },
+  alpaca_base_url: { type: String, default: 'https://paper-api.alpaca.markets' },
+}, { timestamps: true })
+
+WalletSchema.index({ userId: 1, name: 1 }, { unique: true })
+WalletSchema.index({ userId: 1, active: 1 })
+
+export const WalletModel = mongoose.model<WalletDoc>('Wallet', WalletSchema)
+
 // BacktestResult
 export interface BacktestTradeDoc {
   ts: Date; asset: string; action: 'buy'|'sell'|'hold'

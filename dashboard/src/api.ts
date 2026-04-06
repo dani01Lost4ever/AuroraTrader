@@ -192,6 +192,14 @@ export interface AdminUser {
   blockedReason: string | null
   twoFactorEnabled: boolean
 }
+export interface WalletInfo {
+  id: string
+  name: string
+  active: boolean
+  alpaca_api_key_masked: string
+  alpaca_api_secret_masked: string
+  alpaca_base_url: string
+}
 
 export interface LoginOkResponse { token: string }
 export interface Login2faResponse { requires2fa: true; tempToken: string }
@@ -285,6 +293,13 @@ export const api = {
   // API Key management
   getKeys:        () => req<MaskedKeys>('/api/keys'),
   setKey:         (key: KeyName, value: string) => req<{ success: boolean }>('/api/keys', json({ key, value })),
+  wallets:        () => req<{ wallets: WalletInfo[] }>('/api/wallets'),
+  createWallet:   (body: { name: string; alpaca_api_key: string; alpaca_api_secret: string; alpaca_base_url?: string }) =>
+    req<{ wallet: WalletInfo }>('/api/wallets', json(body)),
+  activateWallet: (walletId: string) =>
+    req<{ success: boolean }>(`/api/wallets/${encodeURIComponent(walletId)}/activate`, { method: 'POST' }),
+  deleteWallet:   (walletId: string) =>
+    req<{ success: boolean }>(`/api/wallets/${encodeURIComponent(walletId)}`, { method: 'DELETE' }),
 
   stats:          () => req<Stats>('/api/stats'),
   trades:         (page = 1, limit = 50) => req<TradesResponse>(`/api/trades?page=${page}&limit=${limit}`),
@@ -389,6 +404,10 @@ export const platformApi = {
   changePassword: api.changePassword,
   getKeys: api.getKeys,
   setKey: api.setKey,
+  wallets: api.wallets,
+  createWallet: api.createWallet,
+  activateWallet: api.activateWallet,
+  deleteWallet: api.deleteWallet,
   audit: api.audit,
   getPrompt: api.getPrompt,
   setPrompt: api.setPrompt,

@@ -1,29 +1,32 @@
 /* ─── Default (Dark) theme ─────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700&display=swap');
+
 :root,
 [data-theme="dark"] {
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
-  --font-sans: 'Inter', system-ui, sans-serif;
-  --bg1: #0d0f14;
-  --bg2: #12151c;
-  --bg3: #181c26;
-  --border: rgba(255, 255, 255, 0.07);
-  --border2: rgba(255, 255, 255, 0.12);
-  --text: #e2e8f0;
-  --muted: #64748b;
-  --accent: #00d4aa;
-  --accent2: #818cf8;
+  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'Cascadia Code', 'Menlo', monospace;
+  --font-sans: 'Sora', 'Space Grotesk', system-ui, sans-serif;
+  --bg1: #090d16;
+  --bg2: #111829;
+  --bg3: #172238;
+  --border: rgba(157, 176, 209, 0.17);
+  --border2: rgba(157, 176, 209, 0.28);
+  --text: #e8f0ff;
+  --muted: #8fa0be;
+  --accent: #3dd2ff;
+  --accent-rgb: 61, 210, 255;
+  --accent2: #f4b942;
   --green: #22c55e;
-  --danger: #ff4d6d;
+  --danger: #ff5a6c;
   --warn: #f59e0b;
-  --nav-bg: #0a0c10;
-  --nav-border: rgba(255,255,255,0.07);
-  --scrollbar-thumb: #2a2f3e;
+  --nav-bg: rgba(9, 13, 22, 0.86);
+  --nav-border: rgba(157,176,209,0.2);
+  --scrollbar-thumb: #314260;
 }
 
 /* ─── Light theme ──────────────────────────────────────────────────────────── */
 [data-theme="light"] {
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
-  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'Cascadia Code', 'Menlo', monospace;
+  --font-sans: 'Sora', 'Space Grotesk', system-ui, sans-serif;
   --bg1: #f1f5f9;
   --bg2: #ffffff;
   --bg3: #f8fafc;
@@ -32,7 +35,8 @@
   --text: #0f172a;
   --muted: #94a3b8;
   --accent: #0ea5e9;
-  --accent2: #8b5cf6;
+  --accent-rgb: 14, 165, 233;
+  --accent2: #f59e0b;
   --green: #16a34a;
   --danger: #dc2626;
   --warn: #d97706;
@@ -65,7 +69,7 @@
 /* ─── Midnight theme ───────────────────────────────────────────────────────── */
 [data-theme="midnight"] {
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
-  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-sans: 'Sora', 'Space Grotesk', system-ui, sans-serif;
   --bg1: #07071a;
   --bg2: #0d0d2b;
   --bg3: #12123a;
@@ -87,7 +91,7 @@
 /*  Palette: Ethan Schoonover's Solarized (light variant base)                 */
 [data-theme="solarized"] {
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
-  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-sans: 'Sora', 'Space Grotesk', system-ui, sans-serif;
   --bg1: #fdf6e3;   /* base3  – main background  */
   --bg2: #eee8d5;   /* base2  – card background  */
   --bg3: #e0dac8;   /* base1  – slightly deeper  */
@@ -109,7 +113,7 @@
 /*  Palette: Arctic Ice Studio "Nord"                                           */
 [data-theme="nord"] {
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
-  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-sans: 'Sora', 'Space Grotesk', system-ui, sans-serif;
   --bg1: #2e3440;   /* nord0  */
   --bg2: #3b4252;   /* nord1  */
   --bg3: #434c5e;   /* nord2  */
@@ -131,7 +135,7 @@
 /*  Palette: morhetz/gruvbox (dark hard variant)                               */
 [data-theme="gruvbox"] {
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
-  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-sans: 'Sora', 'Space Grotesk', system-ui, sans-serif;
   --bg1: #1d2021;   /* dark hard bg  */
   --bg2: #282828;   /* bg0           */
   --bg3: #32302f;   /* bg1           */
@@ -159,12 +163,31 @@
 html { height: 100%; }
 
 body {
-  background: var(--bg1);
+  background:
+    radial-gradient(1200px 560px at 90% -10%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 70%),
+    radial-gradient(900px 440px at 8% 0%, color-mix(in srgb, var(--accent2) 16%, transparent), transparent 72%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg1) 92%, #02040a), var(--bg1));
+  background-repeat: no-repeat, no-repeat, no-repeat;
+  background-attachment: fixed, fixed, fixed;
+  background-size: cover, cover, cover;
   color: var(--text);
   font-family: var(--font-sans);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--border) 76%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 76%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
+  opacity: 0.18;
 }
 
 button {
@@ -202,13 +225,21 @@ button:disabled {
 }
 
 @keyframes landingFloatA {
-  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.75; }
-  50% { transform: translate3d(20px, -14px, 0) scale(1.08); opacity: 0.5; }
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.8; }
+  30% { transform: translate3d(36px, -24px, 0) scale(1.12); opacity: 0.56; }
+  65% { transform: translate3d(-18px, 18px, 0) scale(1.04); opacity: 0.68; }
 }
 
 @keyframes landingFloatB {
-  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.65; }
-  50% { transform: translate3d(-24px, 16px, 0) scale(1.06); opacity: 0.45; }
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.7; }
+  25% { transform: translate3d(-42px, 26px, 0) scale(1.08); opacity: 0.52; }
+  70% { transform: translate3d(20px, -14px, 0) scale(1.02); opacity: 0.66; }
+}
+
+@keyframes landingFloatC {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.62; }
+  40% { transform: translate3d(28px, 34px, 0) scale(1.14); opacity: 0.42; }
+  75% { transform: translate3d(-20px, -18px, 0) scale(1.05); opacity: 0.58; }
 }
 
 @keyframes landingTape {
@@ -224,25 +255,33 @@ button:disabled {
 
 .landing-bg-orb {
   position: absolute;
-  width: 340px;
-  height: 340px;
+  width: 420px;
+  height: 420px;
   border-radius: 50%;
-  filter: blur(20px);
+  filter: blur(28px);
   pointer-events: none;
+  mix-blend-mode: screen;
 }
 
 .landing-bg-orb-a {
-  top: -120px;
-  left: -70px;
-  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 38%, transparent), transparent 72%);
-  animation: landingFloatA 14s ease-in-out infinite;
+  top: -150px;
+  left: -120px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 48%, transparent), transparent 72%);
+  animation: landingFloatA 18s ease-in-out infinite;
 }
 
 .landing-bg-orb-b {
-  right: -90px;
-  top: 90px;
-  background: radial-gradient(circle, color-mix(in srgb, var(--accent2) 35%, transparent), transparent 74%);
-  animation: landingFloatB 17s ease-in-out infinite;
+  right: -130px;
+  top: 30px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent2) 45%, transparent), transparent 74%);
+  animation: landingFloatB 21s ease-in-out infinite;
+}
+
+.landing-bg-orb-c {
+  left: 34%;
+  bottom: -210px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 30%, var(--accent2) 70%), transparent 74%);
+  animation: landingFloatC 24s ease-in-out infinite;
 }
 
 .landing-bg-grid {
@@ -290,6 +329,7 @@ button:disabled {
 @media (prefers-reduced-motion: reduce) {
   .landing-bg-orb-a,
   .landing-bg-orb-b,
+  .landing-bg-orb-c,
   .landing-tape-track,
   .landing-scanline {
     animation: none;

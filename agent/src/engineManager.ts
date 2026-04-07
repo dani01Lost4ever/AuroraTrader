@@ -211,6 +211,12 @@ export class EngineManager {
     schedule().catch((e) => console.error(`[engine:${rt.username}] scheduleCycle error:`, e.message))
   }
 
+  private rescheduleCycle(rt: UserRuntime): void {
+    if (rt.cycleTimer) clearTimeout(rt.cycleTimer)
+    rt.cycleTimer = null
+    this.scheduleCycle(rt)
+  }
+
   private scheduleDataRefresh(rt: UserRuntime): void {
     if (!rt.active) return
     const schedule = async () => {
@@ -222,6 +228,7 @@ export class EngineManager {
         try {
           if (cfg.activeStrategy === 'llm' || (cfg.activeStrategy === 'auto' && cfg.autoFallbackToLlm)) {
             await this.refreshMarketData(rt, cfg, true)
+            this.rescheduleCycle(rt)
           }
         } catch (e: any) {
           console.error(`[engine:${rt.username}] data refresh error:`, e.message)

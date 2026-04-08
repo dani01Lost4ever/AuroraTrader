@@ -10,6 +10,7 @@ import { PendingCard } from '../components/PendingCard'
 import { ActionBadge } from '../components/ActionBadge'
 import { LogsPanel } from '../components/LogsPanel'
 import { TrainingPanel } from '../components/TrainingPanel'
+import { AllocationCard } from '../components/AllocationCard'
 import { useSocket } from '../hooks/useSocket'
 
 function fmt(ts: string) {
@@ -552,6 +553,8 @@ export function Overview() {
           </div>
         )}
       </div>
+
+      <AllocationCard />
 
       {/* ── Portfolio + Per-asset row ── */}
       {(pieData.length > 0 || perAsset.length > 0) && (

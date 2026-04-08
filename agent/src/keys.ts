@@ -1,4 +1,6 @@
 import { ApiKeyModel, WalletModel } from './schema'
+import { createAdapter } from './exchanges'
+import type { ExchangeAdapter } from './exchanges'
 
 export const KEY_NAMES = [
   'anthropic_api_key',
@@ -21,9 +23,13 @@ export interface UserWalletInfo {
   id: string
   name: string
   active: boolean
+  exchange: 'alpaca' | 'binance' | 'coinbase'
+  mode: 'paper' | 'live'
   alpaca_api_key_masked: string
   alpaca_api_secret_masked: string
   alpaca_base_url: string
+  binance_api_key_masked: string
+  coinbase_api_key_masked: string
 }
 
 const ENV_MAP: Record<KeyName, string> = {
@@ -196,44 +202,73 @@ export async function getUserKeySet(userId: string): Promise<UserKeySet> {
   }
 }
 
+export async function getAdapterForUser(userId: string): Promise<ExchangeAdapter> {
+  const wallet = await getActiveWallet(userId)
+  if (!wallet) throw new Error(`No active wallet for user ${userId}`)
+  return createAdapter(wallet as any)
+}
+
 export async function listUserWallets(userId: string): Promise<UserWalletInfo[]> {
   await ensureWalletSeededFromLegacyKeys(userId)
   const rows = await WalletModel.find({ userId }).sort({ createdAt: 1 }).lean()
-  return rows.map((w) => ({
+  return rows.map((w: any) => ({
     id: w._id.toString(),
     name: w.name,
-    active: Boolean((w as any).active),
-    alpaca_api_key_masked: maskSecret((w as any).alpaca_api_key || ''),
-    alpaca_api_secret_masked: maskSecret((w as any).alpaca_api_secret || ''),
-    alpaca_base_url: (w as any).alpaca_base_url || '',
+    active: Boolean(w.active),
+    exchange: w.exchange ?? 'alpaca',
+    mode: w.mode ?? 'paper',
+    alpaca_api_key_masked: maskSecret(w.alpaca_api_key || ''),
+    alpaca_api_secret_masked: maskSecret(w.alpaca_api_secret || ''),
+    alpaca_base_url: w.alpaca_base_url || '',
+    binance_api_key_masked: maskSecret(w.binance_api_key || ''),
+    coinbase_api_key_masked: maskSecret(w.coinbase_api_key || ''),
   }))
 }
 
 export async function createUserWallet(
   userId: string,
-  payload: { name: string; alpaca_api_key: string; alpaca_api_secret: string; alpaca_base_url?: string }
+  payload: {
+    name: string
+    exchange?: 'alpaca' | 'binance' | 'coinbase'
+    mode?: 'paper' | 'live'
+    alpaca_api_key?: string
+    alpaca_api_secret?: string
+    alpaca_base_url?: string
+    binance_api_key?: string
+    binance_api_secret?: string
+    coinbase_api_key?: string
+    coinbase_api_secret?: string
+  }
 ): Promise<UserWalletInfo> {
   const name = payload.name.trim()
   const existing = await WalletModel.findOne({ userId, name }).lean()
   if (existing) throw new Error('Wallet name already exists')
-
   const hasAny = await WalletModel.exists({ userId })
   const wallet = await WalletModel.create({
     userId,
     name,
     active: !hasAny,
-    alpaca_api_key: payload.alpaca_api_key.trim(),
-    alpaca_api_secret: payload.alpaca_api_secret.trim(),
+    exchange: payload.exchange ?? 'alpaca',
+    mode: payload.mode ?? 'paper',
+    alpaca_api_key: (payload.alpaca_api_key || '').trim(),
+    alpaca_api_secret: (payload.alpaca_api_secret || '').trim(),
     alpaca_base_url: (payload.alpaca_base_url || 'https://paper-api.alpaca.markets').trim(),
+    binance_api_key: (payload.binance_api_key || '').trim(),
+    binance_api_secret: (payload.binance_api_secret || '').trim(),
+    coinbase_api_key: (payload.coinbase_api_key || '').trim(),
+    coinbase_api_secret: (payload.coinbase_api_secret || '').trim(),
   })
-
   return {
     id: wallet._id.toString(),
     name: wallet.name,
     active: wallet.active,
+    exchange: (wallet as any).exchange ?? 'alpaca',
+    mode: (wallet as any).mode ?? 'paper',
     alpaca_api_key_masked: maskSecret(wallet.alpaca_api_key),
     alpaca_api_secret_masked: maskSecret(wallet.alpaca_api_secret),
     alpaca_base_url: wallet.alpaca_base_url,
+    binance_api_key_masked: maskSecret((wallet as any).binance_api_key || ''),
+    coinbase_api_key_masked: maskSecret((wallet as any).coinbase_api_key || ''),
   }
 }
 

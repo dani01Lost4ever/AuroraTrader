@@ -1,7 +1,7 @@
 import express from 'express'
 import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
-import { TradeModel, EquityModel, TokenUsageModel, AuditLogModel, PromptModel, BacktestResultModel, OptimizeResultModel, UserModel } from './schema'
+import { TradeModel, EquityModel, TokenUsageModel, AuditLogModel, PromptModel, BacktestResultModel, OptimizeResultModel, UserModel, WalletModel } from './schema'
 import { executeOrder } from './executor'
 import { markExecuted, markExecutionFailed, exportDataset, expireStaleManualApprovals } from './logger'
 import { getLogs } from './logs'
@@ -18,7 +18,7 @@ import {
   changePasswordHandler,
   isAdminUser,
 } from './auth'
-import { getKey, getMaskedKeysForUser, getUserKey, getUserKeySet, setUserKey, KEY_NAMES, listUserWallets, createUserWallet, activateUserWallet, deleteUserWallet } from './keys'
+import { getKey, getMaskedKeysForUser, getUserKey, getUserKeySet, setUserKey, KEY_NAMES, listUserWallets, createUserWallet, activateUserWallet, deleteUserWallet, getAdapterForUser } from './keys'
 import { logAudit } from './audit'
 import { engineManager } from './engineManager'
 import type { KeyName } from './keys'
@@ -332,9 +332,9 @@ export function createApiServer(): express.Application {
   // GET /api/positions — live positions from Alpaca
   app.get('/api/positions', requireAuth, async (req, res) => {
     try {
-      const [base, headers] = await Promise.all([userAlpacaBase(req), userAlpacaHeaders(req)])
-      const r = await axios.get(`${base}/v2/positions`, { headers })
-      res.json(r.data)
+      const adapter = await getAdapterForUser(currentUserId(req))
+      const portfolio = await adapter.fetchPortfolio()
+      res.json(portfolio.position_details)
     } catch {
       res.json([])
     }
@@ -353,6 +353,16 @@ export function createApiServer(): express.Application {
     res.json(await getMaskedKeysForUser(userId))
   })
 
+  // GET /api/wallets/active-mode — returns mode and exchange of the active wallet
+  app.get('/api/wallets/active-mode', requireAuth, async (req, res) => {
+    const wallet = await WalletModel.findOne({ userId: currentUserId(req), active: true }).lean()
+    res.json({
+      mode: (wallet as any)?.mode ?? 'paper',
+      exchange: (wallet as any)?.exchange ?? 'alpaca',
+      name: (wallet as any)?.name ?? 'Default',
+    })
+  })
+
   // GET /api/wallets - per-user Alpaca wallets
   app.get('/api/wallets', async (req, res) => {
     const wallets = await listUserWallets(currentUserId(req))
@@ -360,21 +370,21 @@ export function createApiServer(): express.Application {
   })
 
   // POST /api/wallets - create wallet
-  app.post('/api/wallets', async (req, res) => {
-    const { name, alpaca_api_key, alpaca_api_secret, alpaca_base_url } = req.body ?? {}
-    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name required' })
-    if (!alpaca_api_key || !alpaca_api_secret) return res.status(400).json({ error: 'alpaca_api_key and alpaca_api_secret required' })
+  app.post('/api/wallets', requireAuth, async (req, res) => {
     try {
+      const { name, exchange, mode,
+              alpaca_api_key, alpaca_api_secret, alpaca_base_url,
+              binance_api_key, binance_api_secret,
+              coinbase_api_key, coinbase_api_secret } = req.body
       const wallet = await createUserWallet(currentUserId(req), {
-        name,
-        alpaca_api_key,
-        alpaca_api_secret,
-        alpaca_base_url,
+        name, exchange, mode,
+        alpaca_api_key, alpaca_api_secret, alpaca_base_url,
+        binance_api_key, binance_api_secret,
+        coinbase_api_key, coinbase_api_secret,
       })
-      await logAudit('wallet.create', wallet.name, currentUser(req), req)
-      res.status(201).json({ wallet })
-    } catch (e: any) {
-      res.status(400).json({ error: e.message || 'Unable to create wallet' })
+      res.json(wallet)
+    } catch (err: any) {
+      res.status(400).json({ error: err.message })
     }
   })
 
@@ -392,6 +402,31 @@ export function createApiServer(): express.Application {
     if (!ok) return res.status(404).json({ error: 'Wallet not found' })
     await logAudit('wallet.delete', req.params.walletId, currentUser(req), req)
     res.json({ success: true })
+  })
+
+  // POST /api/wallets/:id/mode — switch paper/live mode (requires 2FA token for live)
+  app.post('/api/wallets/:id/mode', requireAuth, async (req, res) => {
+    const userId = currentUserId(req)
+    const { mode, token } = req.body
+    if (mode !== 'paper' && mode !== 'live') {
+      return res.status(400).json({ error: 'mode must be "paper" or "live"' })
+    }
+    if (mode === 'live') {
+      const user = await UserModel.findById(userId).lean()
+      if (!user) return res.status(401).json({ error: 'User not found' })
+      if (user.twoFactorEnabled) {
+        if (!token) return res.status(403).json({ error: '2FA token required to enable live trading' })
+        const { verifyTOTP } = await import('./auth')
+        const valid = verifyTOTP(user.twoFactorSecret!, token)
+        if (!valid) return res.status(403).json({ error: 'Invalid 2FA token' })
+      }
+    }
+    const wallet = await WalletModel.findOne({ _id: req.params.id, userId })
+    if (!wallet) return res.status(404).json({ error: 'Wallet not found' })
+    ;(wallet as any).mode = mode
+    await wallet.save()
+    await logAudit(`wallet.mode.${mode}`, `Wallet "${wallet.name}" switched to ${mode} mode`, currentUser(req), req)
+    res.json({ id: wallet._id.toString(), mode })
   })
 
   // POST /api/keys - set a single key
@@ -765,6 +800,63 @@ export function createApiServer(): express.Application {
       trade_count: a.trade_count,
       win_rate: a.trade_count > 0 ? parseFloat(((a.wins / a.trade_count) * 100).toFixed(1)) : 0,
     })))
+  })
+
+  // GET /api/stats/per-period?period=daily|weekly|monthly
+  app.get('/api/stats/per-period', requireAuth, async (req, res) => {
+    const period = (req.query.period as string) || 'daily'
+    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
+
+    let groupId: any
+    if (period === 'monthly') {
+      groupId = {
+        year: { $year: '$timestamp' },
+        month: { $month: '$timestamp' },
+      }
+    } else if (period === 'weekly') {
+      groupId = {
+        year: { $isoWeekYear: '$timestamp' },
+        week: { $isoWeek: '$timestamp' },
+      }
+    } else {
+      groupId = {
+        year: { $year: '$timestamp' },
+        month: { $month: '$timestamp' },
+        day: { $dayOfMonth: '$timestamp' },
+      }
+    }
+
+    const results = await TradeModel.aggregate([
+      { $match: { ...scope, 'outcome.pnl_usd': { $exists: true } } },
+      { $group: {
+        _id: groupId,
+        total_pnl: { $sum: '$outcome.pnl_usd' },
+        trade_count: { $sum: 1 },
+        wins: { $sum: { $cond: ['$outcome.correct', 1, 0] } },
+        avg_win: { $avg: { $cond: [{ $gt: ['$outcome.pnl_usd', 0] }, '$outcome.pnl_usd', null] } },
+        avg_loss: { $avg: { $cond: [{ $lt: ['$outcome.pnl_usd', 0] }, '$outcome.pnl_usd', null] } },
+      }},
+      { $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1, '_id.week': 1 } },
+    ])
+
+    res.json(results.map(r => {
+      let label: string
+      if (period === 'monthly') {
+        label = `${r._id.year}-${String(r._id.month).padStart(2, '0')}`
+      } else if (period === 'weekly') {
+        label = `${r._id.year}-W${String(r._id.week).padStart(2, '0')}`
+      } else {
+        label = `${r._id.year}-${String(r._id.month).padStart(2, '0')}-${String(r._id.day).padStart(2, '0')}`
+      }
+      return {
+        period: label,
+        total_pnl: parseFloat((r.total_pnl ?? 0).toFixed(2)),
+        trade_count: r.trade_count,
+        win_rate: r.trade_count > 0 ? parseFloat(((r.wins / r.trade_count) * 100).toFixed(1)) : 0,
+        avg_win: r.avg_win != null ? parseFloat(r.avg_win.toFixed(2)) : null,
+        avg_loss: r.avg_loss != null ? parseFloat(r.avg_loss.toFixed(2)) : null,
+      }
+    }))
   })
 
   // GET /api/risk/status

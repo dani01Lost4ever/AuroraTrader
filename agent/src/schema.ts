@@ -222,9 +222,15 @@ export interface WalletDoc extends Document {
   userId: string
   name: string
   active: boolean
+  exchange: 'alpaca' | 'binance' | 'coinbase'
+  mode: 'paper' | 'live'
   alpaca_api_key: string
   alpaca_api_secret: string
   alpaca_base_url: string
+  binance_api_key: string
+  binance_api_secret: string
+  coinbase_api_key: string
+  coinbase_api_secret: string
   createdAt: Date
   updatedAt: Date
 }
@@ -233,9 +239,15 @@ const WalletSchema = new Schema<WalletDoc>({
   userId: { type: String, required: true, index: true },
   name: { type: String, required: true },
   active: { type: Boolean, default: false, index: true },
+  exchange: { type: String, enum: ['alpaca', 'binance', 'coinbase'], default: 'alpaca' },
+  mode: { type: String, enum: ['paper', 'live'], default: 'paper' },
   alpaca_api_key: { type: String, default: '' },
   alpaca_api_secret: { type: String, default: '' },
   alpaca_base_url: { type: String, default: 'https://paper-api.alpaca.markets' },
+  binance_api_key: { type: String, default: '' },
+  binance_api_secret: { type: String, default: '' },
+  coinbase_api_key: { type: String, default: '' },
+  coinbase_api_secret: { type: String, default: '' },
 }, { timestamps: true })
 
 WalletSchema.index({ userId: 1, name: 1 }, { unique: true })

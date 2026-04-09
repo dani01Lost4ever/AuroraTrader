@@ -29,10 +29,12 @@ export async function logDecision(
     approval_mode?: 'manual' | 'auto'
     strategy_id?: string
     strategy_label?: string
+    walletId?: string
   } = {}
 ): Promise<TradeRecord> {
   const record = new TradeModel({
     userId,
+    walletId: options.walletId,
     timestamp: new Date(),
     market,
     portfolio: {

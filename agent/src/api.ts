@@ -357,6 +357,7 @@ export function createApiServer(): express.Application {
   app.get('/api/wallets/active-mode', requireAuth, async (req, res) => {
     const wallet = await WalletModel.findOne({ userId: currentUserId(req), active: true }).lean()
     res.json({
+      id: (wallet as any)?._id?.toString() ?? null,
       mode: (wallet as any)?.mode ?? 'paper',
       exchange: (wallet as any)?.exchange ?? 'alpaca',
       name: (wallet as any)?.name ?? 'Default',
@@ -486,7 +487,9 @@ export function createApiServer(): express.Application {
   app.get('/api/trades', async (req, res) => {
     const limit = parseInt(req.query.limit as string) || 50
     const page = parseInt(req.query.page as string) || 1
-    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    const walletId = req.query.walletId as string | undefined
+    const scope: Record<string, any> = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    if (walletId) scope.walletId = walletId
     const trades = await TradeModel.find(scope)
       .sort({ timestamp: -1 })
       .skip((page - 1) * limit)
@@ -508,7 +511,9 @@ export function createApiServer(): express.Application {
 
   // GET /api/stats - summary for dashboard
   app.get('/api/stats', async (req, res) => {
-    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    const walletId = req.query.walletId as string | undefined
+    const scope: Record<string, any> = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    if (walletId) scope.walletId = walletId
     const [total, executed, profitable, datasetSize] = await Promise.all([
       TradeModel.countDocuments(scope),
       TradeModel.countDocuments({ ...scope, executed: true }),
@@ -751,7 +756,9 @@ export function createApiServer(): express.Application {
   // GET /api/equity/history - for drawdown chart
   app.get('/api/equity/history', async (req, res) => {
     const limit = parseInt(req.query.limit as string) || 200
-    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    const walletId = req.query.walletId as string | undefined
+    const scope: Record<string, any> = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    if (walletId) scope.walletId = walletId
     const history = await EquityModel.find(scope).sort({ ts: -1 }).limit(limit).lean()
     res.json(history.reverse())
   })
@@ -783,7 +790,9 @@ export function createApiServer(): express.Application {
 
   // GET /api/stats/per-asset - P&L breakdown by asset
   app.get('/api/stats/per-asset', async (req, res) => {
-    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    const walletId = req.query.walletId as string | undefined
+    const scope: Record<string, any> = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    if (walletId) scope.walletId = walletId
     const perAsset = await TradeModel.aggregate([
       { $match: { ...scope, 'outcome.pnl_usd': { $exists: true } } },
       { $group: {
@@ -805,7 +814,9 @@ export function createApiServer(): express.Application {
   // GET /api/stats/per-period?period=daily|weekly|monthly
   app.get('/api/stats/per-period', requireAuth, async (req, res) => {
     const period = (req.query.period as string) || 'daily'
-    const scope = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    const walletId = req.query.walletId as string | undefined
+    const scope: Record<string, any> = isAdmin(req) ? {} : { userId: currentUserId(req) }
+    if (walletId) scope.walletId = walletId
 
     let groupId: any
     if (period === 'monthly') {

@@ -39,6 +39,7 @@ export interface TradeOutcome {
 
 export interface TradeRecord extends Document {
   userId: string
+  walletId?: string
   timestamp: Date
   market: Record<string, AssetSnapshot>
   portfolio: { cash_usd: number; positions: Record<string, number> }
@@ -59,6 +60,7 @@ export interface TradeRecord extends Document {
 
 const TradeRecordSchema = new Schema<TradeRecord>({
   userId: { type: String, required: true, index: true },
+  walletId: { type: String, index: true },
   timestamp: { type: Date, default: Date.now, index: true },
   market: { type: Schema.Types.Mixed, required: true },
   portfolio: { type: Schema.Types.Mixed, required: true },
@@ -133,6 +135,7 @@ export const ConfigModel = mongoose.model<ConfigRecord>('Config', ConfigSchema)
 // ─── Equity snapshots (for drawdown chart) ───────────────────────────────────
 export interface EquitySnapshotDoc extends Document {
   userId: string
+  walletId?: string
   ts: Date
   equity: number
   cash: number
@@ -140,8 +143,9 @@ export interface EquitySnapshotDoc extends Document {
 }
 
 const EquitySnapshotSchema = new Schema<EquitySnapshotDoc>({
-  userId: { type: String, required: true, index: true },
-  ts:     { type: Date, default: Date.now, index: true },
+  userId:   { type: String, required: true, index: true },
+  walletId: { type: String, index: true },
+  ts:       { type: Date, default: Date.now, index: true },
   equity: { type: Number, required: true },
   cash:   { type: Number, required: true },
   peak:   { type: Number, required: true },

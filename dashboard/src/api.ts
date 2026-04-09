@@ -302,8 +302,8 @@ export const api = {
   deleteWallet:   (walletId: string) =>
     req<{ success: boolean }>(`/api/wallets/${encodeURIComponent(walletId)}`, { method: 'DELETE' }),
 
-  stats:          () => req<Stats>('/api/stats'),
-  trades:         (page = 1, limit = 50) => req<TradesResponse>(`/api/trades?page=${page}&limit=${limit}`),
+  stats:          (walletId?: string) => req<Stats>(`/api/stats${walletId ? `?walletId=${walletId}` : ''}`),
+  trades:         (page = 1, limit = 50, walletId?: string) => req<TradesResponse>(`/api/trades?page=${page}&limit=${limit}${walletId ? `&walletId=${walletId}` : ''}`),
   pending:        () => req<Trade[]>('/api/trades/pending'),
   approve:        (id: string) => req<{success:boolean}>(`/api/trades/${id}/approve`, {method:'POST'}),
   reject:         (id: string) => req<{success:boolean}>(`/api/trades/${id}/reject`, {method:'POST'}),
@@ -324,9 +324,9 @@ export const api = {
   chartBars: (asset: string, timeframe = '1H', limit = 150) =>
     req<OHLCBar[]>(`/api/charts/${encodeURIComponent(asset)}?timeframe=${timeframe}&limit=${limit}`),
 
-  equityHistory:   (limit = 200) => req<EquityPoint[]>(`/api/equity/history?limit=${limit}`),
+  equityHistory:   (limit = 200, walletId?: string) => req<EquityPoint[]>(`/api/equity/history?limit=${limit}${walletId ? `&walletId=${walletId}` : ''}`),
   portfolioDetail: () => req<PortfolioDetail>('/api/portfolio/detail'),
-  perAssetPnl:     () => req<AssetPnl[]>('/api/stats/per-asset'),
+  perAssetPnl:     (walletId?: string) => req<AssetPnl[]>(`/api/stats/per-asset${walletId ? `?walletId=${walletId}` : ''}`),
   riskStatus:      () => req<RiskStatus>('/api/risk/status'),
 
   tokenStats:      () => req<TokenStats>('/api/tokens/stats'),
@@ -458,7 +458,7 @@ export const agentApi = {
   reasoning: api.reasoning,
 }
 
-export async function getStatsPerPeriod(period: 'daily' | 'weekly' | 'monthly'): Promise<Array<{
+export async function getStatsPerPeriod(period: 'daily' | 'weekly' | 'monthly', walletId?: string): Promise<Array<{
   period: string
   total_pnl: number
   trade_count: number
@@ -466,7 +466,7 @@ export async function getStatsPerPeriod(period: 'daily' | 'weekly' | 'monthly'):
   avg_win: number | null
   avg_loss: number | null
 }>> {
-  return req(`/api/stats/per-period?period=${period}`)
+  return req(`/api/stats/per-period?period=${period}${walletId ? `&walletId=${walletId}` : ''}`)
 }
 
 // WebSocket URL with JWT token injected at call time
@@ -488,7 +488,7 @@ function authHeaders(): Record<string, string> {
   return token ? { 'Authorization': `Bearer ${token}` } : {}
 }
 
-export async function getActiveWalletMode(): Promise<{ mode: 'paper' | 'live'; exchange: string; name: string }> {
+export async function getActiveWalletMode(): Promise<{ id: string | null; mode: 'paper' | 'live'; exchange: string; name: string }> {
   const res = await fetch('/api/wallets/active-mode', { headers: authHeaders() })
   return res.json()
 }
